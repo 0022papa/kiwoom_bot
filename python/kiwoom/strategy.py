@@ -265,29 +265,38 @@ async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=
 # ---------------------------------------------------------
 def is_market_open():
     """ 
-    장 운영 시간 및 휴장일 자동 확인 (exchange_calendars 라이브러리 활용) 
+    장 운영 시간 및 휴장일 자동 확인 (하드코딩 시간 체크 + 라이브러리 휴장일 체크)
     """
-    # 봇 설정에서 시간 체크를 껐다면 무조건 True 반환
     use_market_time = BOT_SETTINGS.get("USE_MARKET_TIME", True)
     if not use_market_time: return True
 
     try:
-        # 한국 거래소(XKRX) 달력 가져오기
-        xkrx = xcals.get_calendar("XKRX")
-        
-        # 현재 시간이 장 운영 시간(Session)인지 확인
-        # (주말, 공휴일, 장 시작 전, 장 마감 후를 모두 자동으로 걸러줍니다)
         now = datetime.now()
-        return xkrx.is_session(now.strftime("%Y-%m-%d")) and xkrx.is_open_on_minute(now)
+        current_time = now.time()
+        
+        # 1. 시간으로 1차 필터링 (가장 확실한 방법)
+        # 09:00:00 ~ 15:30:00 사이가 아니면 무조건 장 마감으로 처리
+        # (TIP: 장 마감 동시호가 때 매수를 피하고 싶다면 15:20:00으로 설정하세요)
+        start_time = datetime.strptime("09:00:00", "%H:%M:%S").time()
+        end_time = datetime.strptime("15:20:00", "%H:%M:%S").time() 
+        
+        if current_time < start_time or current_time > end_time:
+            return False
+
+        # 2. 오늘은 평일(개장일)인가? (exchange_calendars 라이브러리 활용)
+        # 주말이나 공휴일 체크는 라이브러리에 맡깁니다.
+        xkrx = xcals.get_calendar("XKRX")
+        if not xkrx.is_session(now.strftime("%Y-%m-%d")):
+            return False
+
+        return True
 
     except Exception as e:
-        # 라이브러리 에러 시 안전하게 기존 방식(시간만 체크)으로 폴백하거나 로그 남김
         strategy_logger.error(f"장 운영 시간 확인 중 오류: {e}")
-        # 비상시: 평일 9시~15:30분이면 True로 간주 (임시 방편)
+        # 오류 발생 시 비상 로직 (평일 09:00 ~ 15:30)
         if now.weekday() < 5:
-            current_time = now.time()
             start = datetime.strptime("09:00:00", "%H:%M:%S").time()
-            end = datetime.strptime("15:35:00", "%H:%M:%S").time()
+            end = datetime.strptime("15:20:00", "%H:%M:%S").time()
             return start <= current_time <= end
         return False
 
@@ -1258,21 +1267,19 @@ async def main():
                 await save_status_to_file(force=True)
                 last_force_save = datetime.now()
 
-            # 🌟 [수정] 리포트 발송 로직을 봇 상태 확인(RUNNING/STOPPED)보다 앞으로 이동
-            # 봇이 STOPPED 상태여도 15:40분이 되면 리포트를 발송합니다.
-            current_date_str = datetime.now().strftime('%Y-%m-%d')
-            if datetime.now().hour == 15 and datetime.now().minute >= 40:
-                if last_report_date != current_date_str:
-                    await send_daily_report()
-                    last_report_date = current_date_str
-
             if await check_auto_condition_change(): break
             if bot_status == "RESTARTING": break
 
             elif bot_status == "RUNNING":
                 if not is_market_open():
                     now_time = datetime.now().time()
-                    # 🌟 [제거] 기존 리포트 발송 로직은 위로 이동했으므로 여기서 제거됨
+                    # 리포트 전송 (15시 40분 이후에 아직 안 보냈다면 전송)
+                    current_date_str = datetime.now().strftime('%Y-%m-%d')
+                    # 수정: 40분이 '지났으면' 보내도록 변경 (>= 40)
+                    if datetime.now().hour == 15 and datetime.now().minute >= 40:
+                        if last_report_date != current_date_str:
+                            await send_daily_report()
+                            last_report_date = current_date_str
 
                     if (datetime.now() - last_alive_log).total_seconds() > 1800:
                         msg = f"💤 [장마감] 대기 모드\n보유: {len(TRADING_STATE)}종목"

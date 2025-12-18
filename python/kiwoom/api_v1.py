@@ -36,7 +36,7 @@ class SmartRateLimiter:
     def __init__(self):
         self.min_interval = 0.5  # 최소 대기 (초) 
         self.max_interval = 5.0   # 최대 대기 (초)
-        self.current_interval = 0.33 
+        self.current_interval = 0.5
         self.last_call_time = 0
         self.decay_rate = 0.95    # 성공 시 대기 시간 감소율
         self.penalty_multiplier = 1.5 # 실패 시 대기 시간 증가율
