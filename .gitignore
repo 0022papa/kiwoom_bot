@@ -1,0 +1,8 @@
+nodejs/kiwoom/.env
+python/kiwoom/.env
+nodejs/kiwoom/node_modules/
+python/kiwoom/__pycache__/
+-r nodejs/kiwoom/node_modules/
+-r python/kiwoom/__pycache__/
+kiwoom_bot_data/
+-r kiwoom_bot_data/

@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>백테스팅 시뮬레이터</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+    <style>
+        .loader { border-top-color: #6366f1; animation: spin 1s linear infinite; }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        input:focus { outline: 2px solid #6366f1; outline-offset: -1px; }
+        .dark ::-webkit-calendar-picker-indicator { filter: invert(1); cursor: pointer; }
+    </style>
+</head>
+<body class="bg-slate-100 dark:bg-slate-900 text-slate-900 dark:text-slate-100 min-h-screen p-4 transition-colors duration-200">
+    <div class="max-w-4xl mx-auto">
+        <div class="flex justify-between items-center mb-6">
+            <h1 class="text-2xl font-bold text-indigo-600 dark:text-indigo-400 flex items-center gap-2">
+                📊 백테스팅 시뮬레이터
+            </h1>
+            <a href="/" class="px-4 py-2 bg-slate-200 dark:bg-slate-700 rounded-lg hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors font-medium text-sm">
+                ↩ 대시보드로 복귀
+            </a>
+        </div>
+
+        <div class="bg-white dark:bg-slate-800 rounded-xl shadow-lg p-6 mb-6 border border-slate-200 dark:border-slate-700">
+            <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
+                📝 테스트 조건 입력
+                <span class="text-xs font-normal text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-700 px-2 py-0.5 rounded-full">과거 시점 시뮬레이션</span>
+            </h2>
+            
+            <div class="flex gap-2 items-center mb-2 px-1 select-none">
+                <div class="w-[19rem] text-sm font-bold text-slate-500 dark:text-slate-400 pl-1">
+                    종목명 (전 종목 검색) <span class="text-slate-300">|</span> 코드
+                </div>
+                <div class="w-36 text-center text-sm font-bold text-slate-500 dark:text-slate-400">
+                    진입날짜
+                </div>
+                <div class="w-32 text-center text-sm font-bold text-slate-500 dark:text-slate-400">
+                    진입시간 <span class="text-[10px] font-normal">(HHMMSS)</span>
+                </div>
+            </div>
+            <div id="input-rows" class="space-y-3"></div>
+            
+            <datalist id="stock-list"></datalist>
+
+            <div class="mt-6 flex justify-between items-center border-t border-slate-100 dark:border-slate-700 pt-4">
+                <button onclick="addRow()" class="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 text-sm font-medium flex items-center gap-1 transition-colors">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                    종목 추가
+                </button>
+                
+                <div class="flex items-center gap-3">
+                    <p class="text-xs text-red-500 font-bold hidden sm:block text-right">
+                        * 반드시 실전투자 API Key가 필요합니다.<br>(모의투자 계좌는 과거 차트 조회 불가)
+                    </p>
+                    <button onclick="runBacktest()" id="run-btn" class="px-6 py-2.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-bold flex items-center gap-2 shadow-lg shadow-indigo-500/30 transition-all active:scale-95">
+                        <span>▶ 시뮬레이션 시작</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <div id="result-area" class="hidden bg-white dark:bg-slate-800 rounded-xl shadow-lg p-6 border border-slate-200 dark:border-slate-700 animate-fade-in-down">
+            <h2 class="text-lg font-semibold mb-4 flex justify-between items-center">
+                📈 결과 리포트
+                <span id="status-badge" class="text-xs px-2.5 py-1 bg-yellow-100 text-yellow-800 rounded-full font-medium">대기 중...</span>
+            </h2>
+            
+            <div id="result-summary" class="mb-6 grid grid-cols-1 sm:grid-cols-3 gap-4 text-center"></div>
+            
+            <div class="overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm text-left">
+                        <thead class="bg-slate-50 dark:bg-slate-700 text-slate-600 dark:text-slate-300">
+                            <tr>
+                                <th class="p-3 font-semibold">종목명(코드)</th>
+                                <th class="p-3 font-semibold">진입시간</th>
+                                <th class="p-3 font-semibold text-right">진입가</th>
+                                <th class="p-3 font-semibold">매도시간</th>
+                                <th class="p-3 font-semibold text-right">매도가</th>
+                                <th class="p-3 font-semibold text-center">수익률</th>
+                                <th class="p-3 font-semibold w-1/4">매매 사유</th>
+                                <th class="p-3 font-semibold text-center">차트</th> </tr>
+                        </thead>
+                        <tbody id="result-table" class="divide-y divide-slate-200 dark:divide-slate-600 bg-white dark:bg-slate-800"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="chart-modal" class="fixed inset-0 z-50 hidden bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+        <div class="bg-white dark:bg-slate-800 w-full max-w-5xl rounded-2xl shadow-2xl flex flex-col max-h-[90vh]">
+            <div class="flex justify-between items-center p-4 border-b border-slate-200 dark:border-slate-700">
+                <h3 class="text-lg font-bold" id="modal-title">차트 보기</h3>
+                <button onclick="closeChartModal()" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            <div class="p-4 flex-grow overflow-hidden bg-slate-50 dark:bg-slate-900/50">
+                <div id="chart-container" class="w-full h-[400px]"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let stockMap = {}; 
+        let currentResults = []; // 결과 데이터 저장용
+        let chartInstance = null; // 차트 인스턴스
+
+        async function loadStockList() {
+            try {
+                const res = await fetch('/api/master_stocks');
+                const data = await res.json();
+                const datalist = document.getElementById('stock-list');
+                datalist.innerHTML = '';
+                
+                if (data.stocks && data.stocks.length > 0) {
+                    data.stocks.forEach(s => {
+                        stockMap[s.name] = s.code; 
+                        const option = document.createElement('option');
+                        option.value = s.name; 
+                        option.label = s.code; 
+                        datalist.appendChild(option);
+                    });
+                }
+            } catch (e) { console.error(e); }
+        }
+        loadStockList();
+
+        function addRow() {
+            const div = document.createElement('div');
+            div.className = 'flex gap-2 items-center animate-fade-in-down';
+            const today = new Date().toISOString().split('T')[0];
+            
+            div.innerHTML = `
+                <div class="relative flex items-center gap-1">
+                    <input type="text" list="stock-list" placeholder="종목명 검색..." 
+                           class="name-input p-2 border border-slate-300 dark:border-slate-600 rounded-lg w-48 bg-white dark:bg-slate-700 dark:text-white text-sm placeholder-slate-400"
+                           oninput="updateCode(this)">
+                    <input type="text" placeholder="코드" readonly 
+                           class="code-input p-2 border border-slate-300 dark:border-slate-600 rounded-lg w-24 bg-slate-100 dark:bg-slate-600 text-slate-500 dark:text-slate-300 text-center text-sm font-mono cursor-default focus:outline-none">
+                </div>
+                <input type="date" value="${today}" max="${today}"
+                       class="date-input p-2 border border-slate-300 dark:border-slate-600 rounded-lg w-36 bg-white dark:bg-slate-700 dark:text-white text-sm font-mono cursor-pointer">
+                <input type="text" placeholder="HHMMSS" value="090000" class="time-input p-2 border border-slate-300 dark:border-slate-600 rounded-lg w-32 bg-white dark:bg-slate-700 dark:text-white text-center text-sm font-mono">
+                <button onclick="removeRow(this)" class="text-slate-400 hover:text-red-500 p-2 rounded-full hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                </button>
+            `;
+            document.getElementById('input-rows').appendChild(div);
+        }
+
+        function removeRow(btn) {
+            btn.parentElement.remove();
+        }
+
+        function updateCode(input) {
+            const name = input.value;
+            const codeInput = input.nextElementSibling; 
+            if (stockMap[name]) codeInput.value = stockMap[name];
+            else if (/^\d{6}$/.test(name)) codeInput.value = name;
+            else codeInput.value = ""; 
+        }
+
+        addRow();
+
+        async function runBacktest() {
+            const codeInputs = document.querySelectorAll('.code-input');
+            const dateInputs = document.querySelectorAll('.date-input');
+            const timeInputs = document.querySelectorAll('.time-input');
+            
+            const signals = [];
+            for(let i=0; i<codeInputs.length; i++) {
+                const code = codeInputs[i].value.trim();
+                const rawDate = dateInputs[i].value; 
+                const timeStr = timeInputs[i].value.trim();
+                if(code && rawDate) {
+                    const cleanDate = rawDate.replace(/-/g, '');
+                    signals.push([code, cleanDate, timeStr]);
+                }
+            }
+
+            if(signals.length === 0) return alert("종목과 날짜를 입력해주세요.");
+
+            const btn = document.getElementById('run-btn');
+            const originalBtnContent = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = `<div class="loader w-4 h-4 border-2 rounded-full border-t-transparent mr-2"></div> 계산 중...`;
+
+            document.getElementById('result-area').classList.remove('hidden');
+            document.getElementById('status-badge').textContent = "요청 중...";
+            document.getElementById('result-table').innerHTML = '<tr><td colspan="8" class="p-8 text-center text-slate-500">데이터 조회 및 시뮬레이션 중입니다...<br><span class="text-xs">(약 5~10초 소요)</span></td></tr>';
+
+            try {
+                const reqRes = await fetch('/api/backtest/request', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ signals })
+                });
+                
+                if(!reqRes.ok) throw new Error("요청 실패");
+
+                let attempts = 0;
+                const poll = setInterval(async () => {
+                    attempts++;
+                    if(attempts > 45) { clearInterval(poll); finish("시간 초과", false); return; }
+
+                    const resRes = await fetch('/api/backtest/result?t=' + Date.now(), { 
+    cache: "no-store",
+    headers: { 'Pragma': 'no-cache' }
+});
+                    const data = await resRes.json();
+
+                    if(data.status === 'complete') {
+                        clearInterval(poll);
+                        currentResults = data.results; // 차트 표시를 위해 저장
+                        renderResults(data.results);
+                        finish("분석 완료", true);
+                    } else {
+                        document.getElementById('status-badge').textContent = `진행 중... (${attempts * 2}초)`;
+                    }
+                }, 2000);
+
+            } catch(e) { finish("오류 발생", false); }
+
+            function finish(msg, success) {
+                btn.disabled = false;
+                btn.innerHTML = originalBtnContent;
+                const badge = document.getElementById('status-badge');
+                badge.textContent = msg;
+                badge.className = `text-xs px-2.5 py-1 rounded-full font-medium ${success ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`;
+            }
+        }
+
+        function renderResults(results) {
+            const tbody = document.getElementById('result-table');
+            const summary = document.getElementById('result-summary');
+            tbody.innerHTML = '';
+            
+            if (!results || results.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" class="p-8 text-center text-slate-500">결과 데이터가 없습니다.</td></tr>';
+                return;
+            }
+
+            // 첫 번째 결과가 모의투자 에러인지 확인
+            if(results[0].sell_reason.includes("실전투자 API")) {
+                 tbody.innerHTML = `<tr><td colspan="8" class="p-8 text-center text-red-500 font-bold text-lg">❌ ${results[0].sell_reason}</td></tr>`;
+                 summary.innerHTML = '';
+                 return;
+            }
+
+            let totalProfit = 0;
+            let wins = 0;
+
+            results.forEach((r, idx) => {
+                totalProfit += r.profit_rate;
+                if(r.profit_rate > 0) wins++;
+                
+                const color = r.profit_rate > 0 ? 'text-green-600 dark:text-green-400' : (r.profit_rate < 0 ? 'text-red-600 dark:text-red-400' : 'text-slate-500');
+                const stockName = Object.keys(stockMap).find(key => stockMap[key] === r.stock_code) || r.stock_code;
+
+                tbody.innerHTML += `
+                    <tr class="border-b border-slate-100 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
+                        <td class="p-3 font-medium text-slate-800 dark:text-slate-200">${stockName}<br><span class="text-xs text-slate-400 font-normal">${r.stock_code}</span></td>
+                        <td class="p-3 text-xs text-slate-500">${r.buy_time}</td>
+                        <td class="p-3 text-right font-mono text-slate-600 dark:text-slate-400">${r.buy_price.toLocaleString()}</td>
+                        <td class="p-3 text-xs text-slate-500">${r.sell_time}</td>
+                        <td class="p-3 text-right font-mono text-slate-600 dark:text-slate-400">${r.sell_price.toLocaleString()}</td>
+                        <td class="p-3 font-bold text-center ${color}">${r.profit_rate.toFixed(2)}%</td>
+                        <td class="p-3 text-xs text-slate-500 truncate max-w-[150px]" title="${r.sell_reason}">${r.sell_reason}</td>
+                        <td class="p-3 text-center">
+                            <button onclick="showChart(${idx})" class="px-3 py-1 bg-blue-100 hover:bg-blue-200 text-blue-700 text-xs rounded-md font-bold transition-colors">
+                                차트 보기
+                            </button>
+                        </td>
+                    </tr>`;
+            });
+            
+            const avg = results.length ? (totalProfit / results.length).toFixed(2) : 0;
+            const winRate = results.length ? ((wins / results.length) * 100).toFixed(0) : 0;
+
+            summary.innerHTML = `
+                <div class="p-4 bg-slate-50 dark:bg-slate-700/50 rounded-xl border border-slate-200 dark:border-slate-700">
+                    <div class="text-sm text-slate-500 dark:text-slate-400 mb-1">총 수익률</div>
+                    <span class="text-2xl font-bold ${totalProfit > 0 ? 'text-green-600' : 'text-red-600'}">${totalProfit.toFixed(2)}%</span>
+                </div>
+                <div class="p-4 bg-slate-50 dark:bg-slate-700/50 rounded-xl border border-slate-200 dark:border-slate-700">
+                    <div class="text-sm text-slate-500 dark:text-slate-400 mb-1">평균 수익률</div>
+                    <span class="text-2xl font-bold ${avg > 0 ? 'text-green-600' : 'text-slate-700 dark:text-slate-300'}">${avg}%</span>
+                </div>
+                <div class="p-4 bg-slate-50 dark:bg-slate-700/50 rounded-xl border border-slate-200 dark:border-slate-700">
+                    <div class="text-sm text-slate-500 dark:text-slate-400 mb-1">승률</div>
+                    <span class="text-2xl font-bold text-blue-600 dark:text-blue-400">${winRate}%</span>
+                </div>
+            `;
+        }
+
+        // 🌟 [핵심] 차트 팝업 표시
+        function showChart(idx) {
+            const res = currentResults[idx];
+            if(!res || !res.chart_data || res.chart_data.length === 0) return alert("차트 데이터가 없습니다.");
+
+            document.getElementById('chart-modal').classList.remove('hidden');
+            const stockName = Object.keys(stockMap).find(key => stockMap[key] === res.stock_code) || res.stock_code;
+            document.getElementById('modal-title').textContent = `${stockName} (${res.stock_code}) 백테스팅 결과`;
+
+            // 데이터 가공
+            const candleData = res.chart_data.map(c => {
+                // time_str (YYYYMMDDHHMMSS) -> timestamp
+                const t = c.time_str;
+                const date = new Date(t.slice(0,4), t.slice(4,6)-1, t.slice(6,8), t.slice(8,10), t.slice(10,12));
+                return {
+                    x: date.getTime(),
+                    y: [c.open, c.high, c.low, c.close]
+                };
+            });
+
+            // 매수/매도 시점 어노테이션
+            const buyTimeStr = res.buy_time;
+            const sellTimeStr = res.sell_time;
+            
+            const annotations = [];
+            
+            // 매수 지점
+            if(buyTimeStr) {
+                const bd = new Date(buyTimeStr.slice(0,4), buyTimeStr.slice(4,6)-1, buyTimeStr.slice(6,8), buyTimeStr.slice(8,10), buyTimeStr.slice(10,12));
+                annotations.push({
+                    x: bd.getTime(),
+                    borderColor: '#22c55e',
+                    label: { style: { color: '#fff', background: '#22c55e' }, text: '매수' },
+                    marker: { size: 5, fillColor: '#22c55e', strokeColor: '#fff', radius: 2 }
+                });
+            }
+            
+            // 매도 지점
+            if(sellTimeStr) {
+                const sd = new Date(sellTimeStr.slice(0,4), sellTimeStr.slice(4,6)-1, sellTimeStr.slice(6,8), sellTimeStr.slice(8,10), sellTimeStr.slice(10,12));
+                annotations.push({
+                    x: sd.getTime(),
+                    borderColor: '#ef4444',
+                    label: { style: { color: '#fff', background: '#ef4444' }, text: '매도' },
+                    marker: { size: 5, fillColor: '#ef4444', strokeColor: '#fff', radius: 2 }
+                });
+            }
+
+            const options = {
+                series: [{ data: candleData }],
+                chart: { type: 'candlestick', height: 400, toolbar: { show: true } },
+                title: { text: `수익률: ${res.profit_rate}% (${res.sell_reason})`, align: 'left' },
+                xaxis: { type: 'datetime' },
+                yaxis: { tooltip: { enabled: true } },
+                annotations: { xaxis: annotations },
+                tooltip: { theme: 'dark' }
+            };
+
+            if(chartInstance) chartInstance.destroy();
+            chartInstance = new ApexCharts(document.querySelector("#chart-container"), options);
+            chartInstance.render();
+        }
+
+        function closeChartModal() {
+            document.getElementById('chart-modal').classList.add('hidden');
+        }
+    </script>
+</body>
+</html>

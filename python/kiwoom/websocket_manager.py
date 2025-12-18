@@ -1,0 +1,513 @@
+import websockets
+import asyncio
+import json
+import logging
+import threading
+import time
+import queue
+import os
+import traceback 
+from datetime import datetime
+from config import KIWOOM_SOCKET_URL
+from login import fn_au10001, clear_token_cache
+from websockets.exceptions import ConnectionClosed
+
+# ---------------------------------------------------------
+# 1. 로거 설정
+# ---------------------------------------------------------
+ws_logger = logging.getLogger("WebSocket")
+ws_logger.setLevel(logging.INFO)
+
+# ---------------------------------------------------------
+# 2. WebSocket 매니저 클래스
+# ---------------------------------------------------------
+class KiwoomWebSocketManager:
+    """
+    키움증권 API와 WebSocket 연결을 관리하고 실시간 데이터를 처리하는 클래스.
+    비동기(asyncio)로 통신하며, 메인 스레드와는 큐(Queue)로 소통합니다.
+    """
+    def __init__(self):
+        self.ws_url = KIWOOM_SOCKET_URL
+        self._token = None
+        self.ws_conn = None
+        self.is_logged_in = False
+        
+        # 실시간 데이터 저장소 (Key: 종목코드_타입, Value: 데이터 딕셔너리)
+        self.realtime_data = {}
+        
+        self.debug_mode = False
+        
+        # 스레드 간 동기화를 위한 락
+        self.data_lock = threading.Lock()
+        self.file_lock = threading.Lock() 
+        
+        # 메인 로직으로 이벤트를 전달하는 큐
+        self.condition_queue = queue.Queue() 
+        
+        # 재접속 시 복구할 구독 목록
+        self._stock_subscriptions = [] 
+        self._account_subscriptions = []
+        self.last_cond_idx = None 
+        
+        # 스레드 제어 변수
+        self.is_running = False
+        self.thread = None
+        self._stop_event = None 
+        self._loop = None 
+        self._command_queue = None 
+        
+        # 종목 마스터 데이터 로드
+        self.master_stock_names = {}
+        self._load_master_file()
+        
+        # 대시보드용 데이터 캐시 및 최적화 (Dirty Check)
+        self.dashboard_cache = {}
+        self.is_dashboard_dirty = False
+        self._clear_current_conditions_file()
+        
+        # 파일 저장 백그라운드 스레드 시작
+        threading.Thread(target=self._periodic_dashboard_saver, daemon=True).start()
+
+    def set_debug_mode(self, mode: bool):
+        """ 디버그 모드 설정 (상세 로그 출력 여부) """
+        self.debug_mode = mode
+        level = logging.DEBUG if mode else logging.INFO
+        ws_logger.setLevel(level)
+
+    def _load_master_file(self):
+        """ 종목 코드-이름 매핑 파일을 로드합니다. """
+        try:
+            file_path = "/data/master_stocks.json"
+            if os.path.exists(file_path):
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    self.master_stock_names = json.load(f)
+                ws_logger.info(f"📚 마스터 종목 사전 로드 완료 ({len(self.master_stock_names)}개)")
+            else:
+                ws_logger.warning("⚠️ 마스터 파일(/data/master_stocks.json)이 없습니다.")
+        except Exception as e:
+            ws_logger.error(f"마스터 파일 로드 중 오류: {e}")
+
+    def _clear_current_conditions_file(self):
+        """ 봇 시작 시 기존 포착 종목 파일 초기화 """
+        try:
+            file_path = "/data/current_conditions.json"
+            temp_file = file_path + ".tmp"
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                json.dump({}, f, ensure_ascii=False, indent=4)
+            os.replace(temp_file, file_path)
+            self.dashboard_cache = {} 
+        except Exception: pass
+
+    def _periodic_dashboard_saver(self):
+        """ 
+        [최적화] 1초마다 변경사항이 있을 때만 파일에 저장합니다.
+        (실시간 포착 시 매번 파일 I/O가 발생하면 느려지므로 버퍼링)
+        """
+        while True:
+            try:
+                if self.is_dashboard_dirty:
+                    self._save_dashboard_file_force()
+                    self.is_dashboard_dirty = False
+                time.sleep(1.0) 
+            except Exception:
+                time.sleep(1)
+
+    # ---------------------------------------------------------
+    # WebSocket 패킷 전송 함수 (Async)
+    # ---------------------------------------------------------
+    async def _send_subscription_request(self, ws, item_list, type_list, grp_no="1"):
+        """ 실시간 데이터 구독 요청 """
+        data_list_of_dicts = []
+        if not any(item_list): # 계좌 등 전체 구독
+            for sub_type in type_list:
+                data_list_of_dicts.append({"item": [""], "type": [sub_type]})
+        else: # 개별 종목 구독
+            for item, sub_type in zip(item_list, type_list):
+                 data_list_of_dicts.append({"item": [item], "type": [sub_type]})
+        
+        if not data_list_of_dicts: return
+        
+        payload = { "trnm": "REG", "grp_no": grp_no, "refresh": "1", "data": data_list_of_dicts }
+        await ws.send(json.dumps(payload))
+        
+        if self.debug_mode:
+            ws_logger.debug(f"📤 [WS_SEND] 구독요청 (REG) - {len(data_list_of_dicts)}건")
+        await asyncio.sleep(0.1) 
+
+    async def _send_remove_request(self, ws, item_list, type_list, grp_no="2"):
+        """ 실시간 데이터 구독 해지 """
+        data_list_of_dicts = []
+        for item, sub_type in zip(item_list, type_list):
+             data_list_of_dicts.append({"item": [item], "type": [sub_type]})
+        
+        if not data_list_of_dicts: return
+        
+        payload = { "trnm": "REMOVE", "grp_no": grp_no, "data": data_list_of_dicts }
+        await ws.send(json.dumps(payload))
+        
+        if self.debug_mode:
+            ws_logger.debug("📤 [WS_SEND] 구독해지 (REMOVE)")
+
+    async def _keep_alive_loop(self, ws):
+        """ 연결 유지를 위한 Ping 전송 (5초 간격) """
+        while True:
+            try:
+                await asyncio.sleep(5) 
+                await ws.ping()
+            except (asyncio.CancelledError, Exception): break
+
+    # ---------------------------------------------------------
+    # WebSocket 연결 및 이벤트 루프
+    # ---------------------------------------------------------
+    async def _connect_and_listen(self):
+        try:
+            loop = asyncio.get_running_loop()
+            
+            ws_logger.info("🔑 [접속시도] 토큰 발급 요청 중...")
+            try:
+                # 동기 함수인 fn_au10001을 별도 스레드에서 실행 (블로킹 방지)
+                self._token = await asyncio.wait_for(
+                    loop.run_in_executor(None, fn_au10001),
+                    timeout=10.0
+                )
+            except asyncio.TimeoutError:
+                ws_logger.error("❌ 토큰 발급 시간 초과. 3초 후 재시도합니다.")
+                return 
+
+            if not self._token:
+                ws_logger.error("❌ 토큰 발급 실패. 3초 후 재시도합니다.")
+                return
+
+            self.is_logged_in = False 
+            self._stop_event = asyncio.Event()
+            self._command_queue = asyncio.Queue()
+
+            ws_logger.info(f"🌐 WebSocket 연결 시도: {self.ws_url}")
+            
+            async with websockets.connect(
+                self.ws_url, 
+                ping_interval=None, 
+                ping_timeout=20,
+                close_timeout=10
+            ) as ws:
+                self.ws_conn = ws
+                ws_logger.info("✅ WebSocket 연결 성공. 로그인 패킷 전송...")
+                
+                # 로그인 패킷 전송
+                await ws.send(json.dumps({'trnm': 'LOGIN', 'token': self._token}))
+                
+                if self.debug_mode: ws_logger.debug("📤 [WS_SEND] 로그인 요청 (LOGIN)")
+                
+                # 태스크 생성
+                consumer_task = asyncio.create_task(self._message_consumer(ws)) 
+                command_task = asyncio.create_task(self._command_processor(ws))
+                heartbeat_task = asyncio.create_task(self._keep_alive_loop(ws)) 
+                stop_wait_task = asyncio.create_task(self._stop_event.wait())     
+                
+                # 하나라도 끝나면(연결 끊김 등) 모두 종료
+                done, pending = await asyncio.wait(
+                    [consumer_task, command_task, heartbeat_task, stop_wait_task],
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in pending: task.cancel()
+
+        except ConnectionRefusedError:
+             ws_logger.error("❌ [연결거부] 키움 API 서버가 켜져있지 않거나 포트가 막혔습니다.")
+             await asyncio.sleep(5)
+        except Exception as e:
+            ws_logger.error(f"⚠️ WebSocket 연결 루프 오류:\n{traceback.format_exc()}")
+            await asyncio.sleep(3)
+        finally:
+            ws_logger.info("🔌 WebSocket 세션 종료. 정리 작업 수행.")
+            self.ws_conn = None
+            self.is_logged_in = False
+
+    async def _message_consumer(self, ws):
+        """ 서버로부터 오는 메시지를 수신하고 처리합니다. """
+        try:
+            async for message in ws:
+                try:
+                    data = json.loads(message)
+                    trnm = data.get('trnm')
+
+                    # 실시간 체결 데이터는 로그가 너무 많으므로 제외
+                    if self.debug_mode and trnm not in ['REAL', 'PING']:
+                        ws_logger.debug(f"📥 [WS_RECV] {trnm}")
+
+                    if trnm == 'LOGIN':
+                        if data.get('return_code') == 0:
+                            self.is_logged_in = True
+                            ws_logger.info("🎉 로그인 승인 완료! 기존 구독을 복구합니다.")
+                            await self._request_condition_list(ws)
+                            
+                            # 끊기기 전 구독했던 목록 복구
+                            if self._account_subscriptions:
+                                await self._send_subscription_request(ws, ["" for _ in self._account_subscriptions], self._account_subscriptions, grp_no="1") 
+                            if self._stock_subscriptions:
+                                items = [code for code, type in self._stock_subscriptions]
+                                types = [type for code, type in self._stock_subscriptions]
+                                await self._send_subscription_request(ws, items, types, grp_no="2") 
+                            
+                            # 조건검색 재요청
+                            if self.last_cond_idx:
+                                ws_logger.info(f"🔄 조건검색식 재등록 (Index: {self.last_cond_idx})")
+                                payload = { "trnm": "CNSRREQ", "seq": self.last_cond_idx, "search_type": "1", "stex_tp": "K" }
+                                await ws.send(json.dumps(payload))
+
+                        else:
+                            err_code = data.get('return_code')
+                            err_msg = data.get('return_msg')
+                            ws_logger.error(f"🔥 로그인 실패: {err_msg} [CODE={err_code}]")
+                            
+                            # 토큰 만료 시 캐시 삭제 후 재시도 유도
+                            if err_code != 0:
+                                ws_logger.warning("♻️ 토큰 만료 감지. 캐시를 삭제합니다.")
+                                clear_token_cache() 
+                                await ws.close()
+                                return 
+                                
+                    elif trnm == 'CNSRLST': 
+                        self._save_conditions_to_file(data)
+                    elif trnm == 'CNSRREQ': 
+                        self._process_condition_snapshot(data)
+                    elif trnm == 'REAL' and self.is_logged_in:
+                        self._process_realtime_data(data.get('data', []))
+                        
+                except json.JSONDecodeError:
+                    pass # JSON 파싱 에러는 무시
+                except Exception as e:
+                    ws_logger.error(f"데이터 처리 중 오류: {e}")
+        
+        except ConnectionClosed:
+            ws_logger.warning("📉 서버 연결이 종료되었습니다.")
+                
+    async def _command_processor(self, ws):
+        """ 메인 스레드에서 요청한 명령(구독/해지)을 처리합니다. """
+        while True:
+            try:
+                command = await self._command_queue.get()
+                action = command.get("action")
+                
+                if not self.ws_conn:
+                    self._command_queue.task_done()
+                    continue
+
+                if action == "add":
+                    await self._send_subscription_request(ws, [command["stock_code"]], [command["sub_type"]], grp_no="2")
+                elif action == "remove":
+                    await self._send_remove_request(ws, [command["stock_code"]], [command["sub_type"]], grp_no="2")
+                elif action == "request_condition": 
+                    cond_inx = command.get("cond_inx")
+                    self.last_cond_idx = cond_inx 
+                    
+                    payload = { "trnm": "CNSRREQ", "seq": cond_inx, "search_type": "1", "stex_tp": "K" }
+                    await ws.send(json.dumps(payload))
+                    
+                    if self.debug_mode: ws_logger.debug(f"📤 [WS_SEND] 조건검색 요청 (CNSRREQ)")
+                    else: ws_logger.info(f"조건검색 실시간 요청 전송 (Index: {cond_inx})")
+                        
+                self._command_queue.task_done()
+            except (asyncio.CancelledError, websockets.exceptions.ConnectionClosed):
+                break 
+            except Exception as e: 
+                ws_logger.error(f"명령 처리 중 오류: {e}")
+
+    # ---------------------------------------------------------
+    # 데이터 처리 로직
+    # ---------------------------------------------------------
+    def _process_realtime_data(self, data_list):
+        with self.data_lock:
+            for data in data_list:
+                item_code = data.get('item')
+                data_type = data.get('type')
+                values = data.get('values', {})
+                
+                # 계좌 데이터 키 매핑
+                if data_type in ('00', '04') and item_code == "":
+                    item_key = "ACCOUNT_00" if data_type == "00" else "ACCOUNT_04"
+                
+                # 조건검색 포착 데이터
+                elif data_type == '02': 
+                    item_key = f"CONDITION_{item_code}" 
+                    raw_code = values.get('9001', '')
+                    stock_code = raw_code.strip('AJ') 
+                    event_type = values.get('843') # I:진입, D:이탈
+                    
+                    stock_name = self.master_stock_names.get(stock_code, stock_code)
+                    real_cond_id = values.get('9007', item_code)
+                    normalized_cond_id = str(int(real_cond_id)) if real_cond_id.isdigit() else real_cond_id
+
+                    # 메인 로직으로 이벤트 전달
+                    event = { "condition_id": normalized_cond_id, "stock_code": stock_code, "type": event_type }
+                    self.condition_queue.put(event)
+                    
+                    ws_logger.info(f"[조건포착] {stock_name}({stock_code}) - {event_type} (ID:{normalized_cond_id})")
+                    self._update_dashboard_memory(stock_code, stock_name, event_type, normalized_cond_id)
+                
+                # 일반 주식 데이터
+                else:
+                    item_key = f"{item_code}_{data_type}"
+                
+                self.realtime_data[item_key] = values
+                
+                # 체결 알림 로그 (수정됨: 종목명 포함)
+                if data_type == '00': 
+                    code = values.get('9001', '')
+                    name = self.master_stock_names.get(code, code) # 마스터 파일에서 종목명 조회 (없으면 코드로 대체)
+                    msg = values.get('913', '')
+                    ws_logger.info(f"[체결알림] {name}({code}): {msg}")
+
+    def _process_condition_snapshot(self, data):
+        """ 조건검색 초기 스냅샷(이미 포착된 종목 리스트) 처리 """
+        try:
+            raw_data = data.get('data')
+            now_str = datetime.now().strftime("%H:%M:%S")
+            cond_id = data.get('seq', 'init')
+            normalized_cond_id = str(int(cond_id)) if str(cond_id).isdigit() else str(cond_id)
+            
+            stocks_info = []
+            if raw_data:
+                # 데이터 형태가 배열일 수도, 문자열일 수도 있음 (API 특성)
+                if isinstance(raw_data, list):
+                    for item in raw_data:
+                        if isinstance(item, dict):
+                            code = item.get('jmcode') or item.get('code') or item.get('9001', '')
+                            name = item.get('stock_name') or item.get('name') or code
+                            if code: stocks_info.append((code, name))
+                        elif isinstance(item, str):
+                            parts = item.split('^')
+                            if parts[0]: stocks_info.append((parts[0], parts[1] if len(parts) > 1 else parts[0]))
+                elif isinstance(raw_data, str):
+                    split_data = raw_data.split(';')
+                    for item in split_data:
+                        if not item.strip(): continue
+                        parts = item.split('^')
+                        if parts[0]: stocks_info.append((parts[0], parts[1] if len(parts) > 1 else parts[0]))
+
+            for raw_code, raw_name in stocks_info:
+                code = raw_code.replace('A', '').replace('J', '').strip()
+                if not code: continue
+                final_name = self.master_stock_names.get(code, raw_name)
+                
+                # 대시보드 업데이트
+                self.dashboard_cache[code] = { "code": code, "name": final_name, "time": now_str, "cond_id": normalized_cond_id }
+                
+                # 이벤트 큐에 추가 (이미 포착된 종목도 감시 대상이 되도록)
+                event = { "condition_id": normalized_cond_id, "stock_code": code, "type": "I" }
+                self.condition_queue.put(event)
+
+            if stocks_info:
+                ws_logger.info(f"🚀 [초기진입] 기존 포착된 {len(stocks_info)}개 종목을 처리 대기열에 추가했습니다.")
+            
+            self.is_dashboard_dirty = True
+            ws_logger.info(f"✅ 조건검색 스냅샷 처리 완료.")
+
+        except Exception as e:
+            ws_logger.error(f"❌ 조건검색 스냅샷 처리 오류: {e}")
+
+    def _update_dashboard_memory(self, code, name, event, cond_id):
+        """ 대시보드용 메모리 업데이트 (파일 저장은 비동기 스레드가 담당) """
+        final_name = self.master_stock_names.get(code, name)
+        if event == 'I':
+            self.dashboard_cache[code] = { "code": code, "name": final_name, "time": datetime.now().strftime("%H:%M:%S"), "cond_id": cond_id }
+        elif event == 'D':
+            if code in self.dashboard_cache: del self.dashboard_cache[code]
+        
+        self.is_dashboard_dirty = True
+
+    def _save_dashboard_file_force(self):
+        """ 대시보드 파일(current_conditions.json) 강제 저장 """
+        try:
+            with self.file_lock:
+                file_path = "/data/current_conditions.json"
+                temp_file = file_path + ".tmp"
+                with open(temp_file, 'w', encoding='utf-8') as f:
+                    json.dump(self.dashboard_cache, f, ensure_ascii=False, indent=4)
+                os.replace(temp_file, file_path)
+        except Exception: pass
+
+    async def _request_condition_list(self, ws):
+        """ 조건검색식 목록 요청 """
+        await ws.send(json.dumps({"trnm": "CNSRLST"}))
+        if self.debug_mode: ws_logger.debug(f"📤 [WS_SEND] 조건목록요청 (CNSRLST)")
+
+    def _save_conditions_to_file(self, data):
+        """ 조건검색식 목록을 파일로 저장 """
+        try:
+            conditions = []
+            data_list = data.get('data', [])
+            if not data_list: return
+            
+            # 데이터 파싱 (배열 또는 구분자 문자열)
+            if isinstance(data_list[0], list):
+                for item in data_list:
+                    if isinstance(item, list) and len(item) >= 2: conditions.append({"id": item[0], "name": item[1]})
+            elif isinstance(data_list[0], str):
+                condition_str_list = data_list[0].split(';')
+                for cond_str in condition_str_list:
+                    parts = cond_str.split('^')
+                    if len(parts) == 2: conditions.append({"id": parts[0], "name": parts[1]})
+            
+            with self.file_lock:
+                file_path = "/data/conditions.json"
+                with open(file_path + ".tmp", 'w', encoding='utf-8') as f: 
+                    json.dump({"conditions": conditions}, f, ensure_ascii=False, indent=4)
+                os.replace(file_path + ".tmp", file_path)
+            ws_logger.info("조건검색 목록 저장 완료.")
+        except Exception as e:
+            ws_logger.error(f"조건 목록 저장 실패: {e}")
+
+    # ---------------------------------------------------------
+    # 외부 호출용 인터페이스 (Thread-Safe)
+    # ---------------------------------------------------------
+    def _start_loop_in_thread(self):
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        ws_logger.info("WebSocket 이벤트 루프 시작")
+        
+        while self.is_running:
+            try: 
+                self._loop.run_until_complete(self._connect_and_listen())
+            except Exception as e: 
+                ws_logger.error(f"이벤트 루프 치명적 오류: {e}")
+            
+            if self.is_running: 
+                ws_logger.info("🔄 5초 후 웹소켓 재연결을 시도합니다...")
+                time.sleep(5)
+
+    def start(self, stock_list=None, account_list=None):
+        if self.is_running: return
+        if stock_list: self._stock_subscriptions = stock_list
+        if account_list: self._account_subscriptions = account_list
+        self.is_running = True
+        self.thread = threading.Thread(target=self._start_loop_in_thread, daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self.is_running = False
+        if self._loop: 
+            self._loop.call_soon_threadsafe(self._stop_event.set)
+        if self.thread: 
+            self.thread.join(timeout=5)
+        ws_logger.info("WebSocket 매니저 종료됨.")
+
+    def get_realtime_data(self, item_code, data_type):
+        key = f"{item_code}_{data_type}"
+        if data_type == "ACCOUNT": key = f"ACCOUNT_{item_code}" 
+        elif data_type == 'CONDITION': return None
+        with self.data_lock: return self.realtime_data.get(key, {}).copy() 
+
+    def pop_condition_event(self):
+        try: return self.condition_queue.get_nowait()
+        except queue.Empty: return None
+
+    def add_subscription(self, stock_code, sub_type="0B"):
+        if self._loop: self._loop.call_soon_threadsafe(self._command_queue.put_nowait, {"action": "add", "stock_code": stock_code, "sub_type": sub_type})
+
+    def remove_subscription(self, stock_code, sub_type="0B"):
+        if self._loop: self._loop.call_soon_threadsafe(self._command_queue.put_nowait, {"action": "remove", "stock_code": stock_code, "sub_type": sub_type})
+
+    def request_condition_snapshot(self, cond_index):
+        if self._loop:
+            self._loop.call_soon_threadsafe(self._command_queue.put_nowait, {"action": "request_condition", "cond_inx": cond_index})

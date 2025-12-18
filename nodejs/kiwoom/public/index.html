@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="ko" class="">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kiwoom Bot Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class', 
+            theme: {
+                extend: {
+                    colors: {
+                        slate: { 50: '#f8fafc', 100: '#f1f5f9', 200: '#e2e8f0', 300: '#cbd5e1', 400: '#94a3b8', 500: '#64748b', 600: '#475569', 700: '#334155', 800: '#1e293b', 900: '#0f172a' }
+                    },
+                    animation: {
+                        'fade-in-down': 'fadeInDown 0.5s ease-out',
+                        'fade-out-up': 'fadeOutUp 0.5s ease-out forwards',
+                        'pulse-fast': 'pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite'
+                    },
+                    keyframes: {
+                        fadeInDown: { '0%': { opacity: '0', transform: 'translate(-50%, -20px)' }, '100%': { opacity: '1', transform: 'translate(-50%, 0)' } },
+                        fadeOutUp: { '0%': { opacity: '1', transform: 'translate(-50%, 0)' }, '100%': { opacity: '0', transform: 'translate(-50%, -20px)' } }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; }
+        ::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        .dark ::-webkit-scrollbar-track { background: #1e293b; }
+        .dark ::-webkit-scrollbar-thumb { background: #475569; }
+        .dark ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        
+        .loader-white { border-top-color: white; animation: spin 1s linear infinite; border-width: 2px; border-style: solid; border-radius: 50%; width: 1rem; height: 1rem; border-right-color: transparent; border-bottom-color: transparent; border-left-color: transparent; display: inline-block; margin-right: 0.5rem; }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+        .toggle-checkbox:checked { right: 0; border-color: #3b82f6; }
+        .toggle-checkbox:checked + .toggle-label { background-color: #3b82f6; }
+        .toggle-checkbox { right: calc(100% - 1.5rem); transition: all 0.3s; top: 0; border-color: #e2e8f0;}
+    </style>
+</head>
+<body class="bg-slate-100 dark:bg-slate-900 text-slate-900 dark:text-slate-100 min-h-screen transition-colors duration-200">
+    <div class="container mx-auto p-4 max-w-[1600px] relative">
+        <header class="flex justify-between items-center mb-6">
+            <div class="flex items-center gap-3">
+                <h1 class="text-2xl md:text-3xl font-bold text-blue-600 dark:text-blue-400">Kiwoom Bot</h1>
+                <span id="mode-badge" class="px-2 py-1 text-xs font-bold rounded bg-gray-200 text-gray-600">Loading...</span>
+            </div>
+            <div class="flex items-center space-x-4">
+                <a href="/backtest.html" class="px-3 py-1.5 text-sm bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg transition-colors flex items-center gap-2">
+                    <span class="hidden sm:inline">백테스팅</span>
+                </a>
+                <button id="theme-toggle" class="p-2 rounded-lg bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors">
+                    <svg id="theme-toggle-dark-icon" class="hidden h-5 w-5" fill="currentColor" viewBox="0 0 20 20"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"></path></svg>
+                    <svg id="theme-toggle-light-icon" class="hidden h-5 w-5" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.121-1.414a1 1 0 010 1.414l-.707.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM10 16a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM3.05 13.657l.707-.707a1 1 0 011.414 1.414l-.707.707a1 1 0 01-1.414-1.414zM2 10a1 1 0 011-1h1a1 1 0 110 2H3a1 1 0 01-1-1zm.293-7.293l.707.707a1 1 0 011.414-1.414l-.707-.707a1 1 0 01-1.414 1.414z"></path></svg>
+                </button>
+                <button id="logout-button" class="px-3 py-1.5 text-sm bg-red-500 hover:bg-red-600 text-white rounded-lg transition-colors">로그아웃</button>
+            </div>
+        </header>
+
+        <div id="message-box" class="hidden fixed top-10 left-1/2 transform -translate-x-1/2 z-50 min-w-[320px] max-w-md px-6 py-4 rounded-xl shadow-2xl font-bold text-sm md:text-base text-center animate-fade-in-down backdrop-blur-md border transition-all"></div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+
+            <div class="space-y-6 lg:col-span-1"> 
+                <div class="p-6 bg-white dark:bg-slate-800 rounded-2xl shadow-lg border border-slate-200 dark:border-slate-700 transition-colors">
+                    <h2 class="text-xl font-bold mb-4 flex items-center"><span>상태 모니터</span></h2>
+                    <div class="mb-6">
+                        <div id="status-container" class="flex flex-col items-center justify-center p-6 bg-slate-100 dark:bg-slate-700 rounded-xl transition-all duration-300 border-2 border-transparent">
+                            <div id="status-light" class="w-6 h-6 rounded-full bg-gray-400 mb-2 shadow-lg transition-all duration-500"></div>
+                            <span id="status-text" class="font-bold text-2xl tracking-tight transition-all duration-300">OFFLINE</span>
+                            <span id="status-subtext" class="text-xs text-slate-500 dark:text-slate-400 mt-1">연결 대기 중...</span>
+                        </div>
+                    </div>
+                    
+                    <form id="settings-form" class="space-y-4">
+                        <div class="flex items-center justify-between p-3 mb-2 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700/50 rounded-lg">
+                            <div>
+                                <label for="MOCK_TRADE" class="text-sm font-bold text-slate-800 dark:text-slate-200 cursor-pointer select-none">모의투자 모드</label>
+                                <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">해제 시 <span class="text-red-500 font-bold">실전 투자</span></p>
+                            </div>
+                            <div class="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
+                                <input type="checkbox" name="MOCK_TRADE" id="MOCK_TRADE" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                <label for="MOCK_TRADE" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                            </div>
+                        </div>
+
+                        <div class="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-700 rounded-lg border border-slate-200 dark:border-slate-600">
+                            <label for="USE_MARKET_TIME" class="text-sm font-medium text-slate-700 dark:text-slate-300 cursor-pointer select-none">장 운영시간 준수</label>
+                            <input type="checkbox" id="USE_MARKET_TIME" name="USE_MARKET_TIME" class="w-5 h-5 text-blue-600 rounded focus:ring-blue-500 cursor-pointer">
+                        </div>
+                        <div class="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-700 rounded-lg border border-slate-200 dark:border-slate-600">
+                            <div><label for="USE_AUTO_SELL" class="text-sm font-bold text-slate-700 dark:text-slate-200 cursor-pointer select-none">매도 감시 실행</label></div>
+                            <div class="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
+                                <input type="checkbox" name="USE_AUTO_SELL" id="USE_AUTO_SELL" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                <label for="USE_AUTO_SELL" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                            </div>
+                        </div>
+                        <div class="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-700 rounded-lg border border-slate-200 dark:border-slate-600">
+                            <div><label for="USE_TELEGRAM" class="text-sm font-bold text-slate-700 dark:text-slate-200 cursor-pointer select-none">텔레그램 알림</label></div>
+                            <div class="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
+                                <input type="checkbox" name="USE_TELEGRAM" id="USE_TELEGRAM" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                <label for="USE_TELEGRAM" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                            </div>
+                        </div>
+                        
+                        <div class="flex items-center justify-between p-3 bg-gray-100 dark:bg-slate-900/50 rounded-lg border border-gray-300 dark:border-slate-600">
+                            <div><label for="DEBUG_MODE" class="text-sm font-bold text-slate-700 dark:text-slate-200 cursor-pointer select-none">🕵️ 디버그 모드</label></div>
+                            <div class="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
+                                <input type="checkbox" name="DEBUG_MODE" id="DEBUG_MODE" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                <label for="DEBUG_MODE" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                            </div>
+                        </div>
+
+                        <div class="border border-blue-200 dark:border-blue-800 rounded-lg p-3 bg-blue-50 dark:bg-blue-900/20 transition-all">
+                            <div class="flex items-center justify-between mb-2">
+                                <div>
+                                    <label for="USE_SCHEDULER" class="text-sm font-bold text-blue-800 dark:text-blue-200 cursor-pointer select-none">⏰ 오전/점심/오후 변경</label>
+                                </div>
+                                <div class="relative inline-block w-10 mr-2 align-middle select-none transition duration-200 ease-in">
+                                    <input type="checkbox" name="USE_SCHEDULER" id="USE_SCHEDULER" class="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                    <label for="USE_SCHEDULER" class="toggle-label block overflow-hidden h-5 rounded-full bg-gray-300 cursor-pointer"></label>
+                                </div>
+                            </div>
+                            <div id="scheduler-options" class="grid grid-cols-2 gap-3 text-sm hidden mt-3 border-t border-blue-200 dark:border-blue-700 pt-3">
+                                <div class="col-span-1"><label class="block text-xs text-slate-500 mb-1">오전 시작</label><input type="time" id="MORNING_START" name="MORNING_START" class="w-full p-1.5 border rounded text-xs bg-white dark:bg-slate-800 dark:border-slate-600 dark:text-white"></div>
+                                <div class="col-span-1"><label class="block text-xs text-slate-500 mb-1">오전 조건식</label><select id="MORNING_COND" name="MORNING_COND" class="w-full p-1.5 border rounded text-xs bg-white dark:bg-slate-800 dark:border-slate-600 dark:text-white"></select></div>
+                                
+                                <div class="col-span-1"><label class="block text-xs text-slate-500 mb-1">점심(중간) 시작</label><input type="time" id="LUNCH_START" name="LUNCH_START" class="w-full p-1.5 border rounded text-xs bg-white dark:bg-slate-800 dark:border-slate-600 dark:text-white"></div>
+                                <div class="col-span-1"><label class="block text-xs text-slate-500 mb-1">점심 조건식</label><select id="LUNCH_COND" name="LUNCH_COND" class="w-full p-1.5 border rounded text-xs bg-white dark:bg-slate-800 dark:border-slate-600 dark:text-white"></select></div>
+
+                                <div class="col-span-1"><label class="block text-xs text-slate-500 mb-1">오후 시작</label><input type="time" id="AFTERNOON_START" name="AFTERNOON_START" class="w-full p-1.5 border rounded text-xs bg-white dark:bg-slate-800 dark:border-slate-600 dark:text-white"></div>
+                                <div class="col-span-1"><label class="block text-xs text-slate-500 mb-1">오후 조건식</label><select id="AFTERNOON_COND" name="AFTERNOON_COND" class="w-full p-1.5 border rounded text-xs bg-white dark:bg-slate-800 dark:border-slate-600 dark:text-white"></select></div>
+                            </div>
+                            <div id="manual-condition-box" class="mt-3 border-t border-blue-200 dark:border-blue-700 pt-3">
+                                <label for="CONDITION_ID" class="block text-sm font-medium mb-1 text-slate-600 dark:text-slate-400">현재 조건검색식</label>
+                                <select id="CONDITION_ID" name="CONDITION_ID" class="w-full p-2.5 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 focus:ring-2 focus:ring-blue-500 outline-none transition-colors"><option value="">로딩 중...</option></select>
+                            </div>
+                        </div>
+
+                        <div class="mt-4">
+                            <label for="BOT_STATUS" class="block text-sm font-medium mb-1 text-slate-600 dark:text-slate-400">봇 상태 설정</label>
+                            <select id="BOT_STATUS" name="BOT_STATUS" class="w-full p-2.5 border border-slate-300 dark:border-slate-600 rounded-lg bg-slate-50 dark:bg-slate-700 focus:ring-2 focus:ring-blue-500 outline-none transition-colors">
+                                <option value="RUNNING">RUNNING (매수 실행)</option>
+                                <option value="STOPPED">STOPPED (매수 중지)</option>
+                            </select>
+                        </div>
+                        
+                        <div class="grid grid-cols-2 gap-4">
+                            <div><label class="block text-sm font-medium mb-1 text-slate-600 dark:text-slate-400">1회 매수(원)</label><input type="number" id="ORDER_AMOUNT" name="ORDER_AMOUNT" class="w-full p-2.5 border rounded-lg bg-slate-50 dark:bg-slate-700"></div>
+                            <div><label class="block text-sm font-medium mb-1 text-slate-600 dark:text-slate-400">쿨다운(분)</label><input type="number" id="RE_ENTRY_COOLDOWN_MIN" name="RE_ENTRY_COOLDOWN_MIN" class="w-full p-2.5 border rounded-lg bg-slate-50 dark:bg-slate-700"></div>
+                        </div>
+
+                        <div class="p-3 bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600">
+                            <label for="MIN_BUY_SELL_RATIO" class="block text-sm font-bold text-slate-700 dark:text-slate-200 mb-1">호가 비율 필터</label>
+                            <input type="number" step="0.1" min="0" id="MIN_BUY_SELL_RATIO" name="MIN_BUY_SELL_RATIO" class="w-full p-2 border rounded-lg bg-white dark:bg-slate-800 text-sm">
+                            <p class="text-xs text-slate-500 mt-1">기본값 0.5 (높을수록 안전)</p>
+                        </div>
+
+                        <div class="p-3 bg-purple-50 dark:bg-purple-900/20 rounded-lg border border-purple-200 dark:border-purple-700/50">
+                            <label for="OVERNIGHT_COND_IDS" class="block text-sm font-bold text-purple-800 dark:text-purple-200 mb-1">오버나잇 조건식</label>
+                            <input type="text" id="OVERNIGHT_COND_IDS" name="OVERNIGHT_COND_IDS" placeholder="예: 2, 5" class="w-full p-2 border rounded-lg bg-white dark:bg-slate-800 text-sm">
+                        </div>
+
+                        <div class="grid grid-cols-3 gap-2">
+                             <div><label class="block text-xs font-medium mb-1 text-red-500">손절(%)</label><input type="number" step="0.1" id="STOP_LOSS_RATE" name="STOP_LOSS_RATE" class="w-full p-2 border rounded-lg bg-slate-50 dark:bg-slate-700 text-sm"></div>
+                            <div><label class="block text-xs font-medium mb-1 text-green-500">익절시작(%)</label><input type="number" step="0.1" id="TRAILING_START_RATE" name="TRAILING_START_RATE" class="w-full p-2 border rounded-lg bg-slate-50 dark:bg-slate-700 text-sm"></div>
+                            <div><label class="block text-xs font-medium mb-1 text-orange-500">트레일링(%)</label><input type="number" step="0.1" id="TRAILING_STOP_RATE" name="TRAILING_STOP_RATE" class="w-full p-2 border rounded-lg bg-slate-50 dark:bg-slate-700 text-sm"></div>
+                        </div>
+                        <button type="submit" class="w-full p-3 mt-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg shadow-md">설정 저장</button>
+                    </form>
+                </div>
+            </div> 
+
+            <div class="space-y-6 lg:col-span-1">
+                <div class="p-6 bg-white dark:bg-slate-800 rounded-2xl shadow-lg border border-slate-200 dark:border-slate-700 transition-colors">
+                    <h2 class="text-xl font-bold mb-4">설정 요약</h2>
+                    <div class="space-y-3 text-sm">
+                        <div class="flex justify-between items-center p-2 rounded bg-slate-50 dark:bg-slate-700/50 border-l-4 border-slate-300 dark:border-slate-500">
+                            <span class="text-slate-600 dark:text-slate-300">운용 모드 / 상태</span>
+                            <div class="flex items-center gap-2"><span id="display_MOCK_TRADE" class="font-bold">...</span><span class="text-slate-300">|</span><span id="display_BOT_STATUS" class="font-bold">...</span></div>
+                        </div>
+                        <div class="flex justify-between items-center p-2 rounded bg-slate-50 dark:bg-slate-700/50 border-l-4 border-slate-300 dark:border-slate-500">
+                            <span class="text-slate-600 dark:text-slate-300">시간준수 / 매도감시</span>
+                            <div class="flex items-center gap-2"><span id="display_USE_MARKET_TIME" class="font-bold">...</span><span class="text-slate-300">|</span><span id="display_USE_AUTO_SELL" class="font-bold">...</span></div>
+                        </div>
+                        <div class="flex justify-between items-center p-2 rounded bg-slate-50 dark:bg-slate-700/50">
+                            <span class="text-slate-600 dark:text-slate-300">알림 / 디버그</span>
+                            <div class="flex items-center gap-2"><span id="display_USE_TELEGRAM" class="font-bold">...</span><span class="text-slate-300">|</span><span id="display_DEBUG_MODE" class="font-bold">...</span></div>
+                        </div>
+                        <div class="flex justify-between items-center p-2 rounded bg-slate-50 dark:bg-slate-700/50">
+                            <span class="text-slate-600 dark:text-slate-300">자동 스케줄</span><span id="display_USE_SCHEDULER" class="font-bold">...</span>
+                        </div>
+                        <div class="flex justify-between items-center p-2 rounded bg-slate-50 dark:bg-slate-700/50">
+                            <span class="text-slate-600 dark:text-slate-300">현재 조건검색식</span><span id="display_CONDITION_NAME" class="font-bold text-blue-600 dark:text-blue-400 truncate max-w-[150px]">...</span>
+                        </div>
+                        <div class="flex justify-between items-center p-2 rounded bg-slate-50 dark:bg-slate-700/50">
+                            <span class="text-slate-600 dark:text-slate-300">1회 매수</span><span id="display_ORDER_AMOUNT" class="font-bold text-slate-900 dark:text-slate-100">...</span>
+                        </div>
+                        <div class="flex justify-between items-center p-2 rounded bg-slate-50 dark:bg-slate-700/50">
+                            <span class="text-slate-600 dark:text-slate-300">재진입 쿨타임</span><span id="display_RE_ENTRY_COOLDOWN_MIN" class="font-bold text-slate-900 dark:text-slate-100">...</span>
+                        </div>
+                        <div class="flex justify-between items-center p-2 rounded bg-slate-50 dark:bg-slate-700/50">
+                            <span class="text-slate-600 dark:text-slate-300">호가 비율 필터</span><span id="display_MIN_BUY_SELL_RATIO" class="font-bold text-slate-900 dark:text-slate-100">...</span>
+                        </div>
+                        <div class="flex justify-between items-center p-2 rounded bg-slate-50 dark:bg-slate-700/50">
+                            <span class="text-slate-600 dark:text-slate-300">오버나잇 조건식</span><span id="display_OVERNIGHT_COND_IDS" class="font-bold text-purple-600 dark:text-purple-400">...</span>
+                        </div>
+                        <div class="flex justify-between items-center p-2 rounded bg-slate-50 dark:bg-slate-700/50">
+                            <span class="text-slate-600 dark:text-slate-300">손절 / 익절 / 추적</span>
+                            <div class="space-x-1"><span id="display_STOP_LOSS_RATE" class="font-bold text-red-500">...</span> / <span id="display_TRAILING_START_RATE" class="font-bold text-green-500">...</span> / <span id="display_TRAILING_STOP_RATE" class="font-bold text-orange-500">...</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="p-6 bg-white dark:bg-slate-800 rounded-2xl shadow-lg border border-slate-200 dark:border-slate-700 transition-colors">
+                    <h2 class="text-xl font-bold mb-4 flex justify-between items-center">
+                        <span class="flex items-center gap-2">
+                            📡 실시간 포착
+                            <span class="relative flex h-3 w-3">
+                              <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                              <span class="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+                            </span>
+                        </span>
+                        <span class="px-3 py-1 bg-red-100 text-red-800 rounded-full text-sm" id="detected-count">0</span>
+                    </h2>
+                    <div class="overflow-y-auto max-h-[230px] border border-slate-200 dark:border-slate-700 rounded-lg">
+                        <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
+                            <thead class="bg-slate-50 dark:bg-slate-700 sticky top-0">
+                                <tr>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-slate-500 dark:text-slate-300">시간</th>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-slate-500 dark:text-slate-300">종목명</th>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-slate-500 dark:text-slate-300">코드</th>
+                                </tr>
+                            </thead>
+                            <tbody id="detected-stocks-table" class="divide-y divide-slate-200 dark:divide-slate-700 bg-white dark:bg-slate-800">
+                                <tr><td colspan="3" class="px-4 py-4 text-center text-slate-500 text-sm">대기 중...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="p-6 bg-white dark:bg-slate-800 rounded-2xl shadow-lg border border-slate-200 dark:border-slate-700 lg:col-span-1 xl:col-span-2 flex flex-col transition-colors">
+                <div class="flex flex-col sm:flex-row justify-between items-center mb-4 gap-3">
+                    <div class="flex items-center gap-3 w-full sm:w-auto">
+                        <h2 class="text-xl font-bold flex items-center gap-2 text-slate-800 dark:text-slate-100">
+                            보유 종목
+                            <span class="px-2.5 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 text-xs font-bold" id="stock-count">0</span>
+                        </h2>
+                    </div>
+
+                    <div class="flex items-center gap-3 w-full sm:w-auto justify-end">
+                        <div class="hidden sm:flex items-center gap-3 px-3 py-1.5 bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600">
+                            <div class="text-right">
+                                <div class="text-[10px] text-slate-400 font-semibold uppercase">실현손익</div>
+                                <div id="realized-profit-val" class="text-xs font-bold font-mono">-</div>
+                            </div>
+                            <div class="w-px h-6 bg-slate-200 dark:bg-slate-600"></div>
+
+                            <div class="text-right">
+                                <div class="text-[10px] text-slate-400 font-semibold uppercase">평가손익</div>
+                                <div id="total-profit-val" class="text-xs font-bold font-mono">-</div>
+                            </div>
+                            <div class="w-px h-6 bg-slate-200 dark:bg-slate-600"></div>
+                            <div class="text-right">
+                                <div class="text-[10px] text-slate-400 font-semibold uppercase">수익률</div>
+                                <div id="total-rate-val" class="text-xs font-bold font-mono">-</div>
+                            </div>
+                        </div>
+
+                        <button onclick="requestBulkSell()" title="비상! 일괄 청산 (모두 매도)" class="group p-2.5 bg-white dark:bg-slate-800 border border-red-200 dark:border-red-900/50 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 hover:border-red-300 transition-all shadow-sm active:scale-95">
+                            <svg class="w-5 h-5 text-red-500 group-hover:text-red-600 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="overflow-x-auto flex-grow">
+                    <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
+                        <thead class="bg-slate-50 dark:bg-slate-700 transition-colors">
+                            <tr>
+                                <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-300">종목</th>
+                                <th class="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-300">수익률/손익</th>
+                                <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-300">평가금/수량</th>
+                            </tr>
+                        </thead>
+                        <tbody id="trading-state-table" class="divide-y divide-slate-200 dark:divide-slate-700">
+                            <tr><td colspan="3" class="px-4 py-10 text-center text-slate-500">보유 종목이 없습니다.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="p-6 bg-white dark:bg-slate-800 rounded-2xl shadow-lg border border-slate-200 dark:border-slate-700 lg:col-span-3 xl:col-span-4 transition-colors">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-bold flex items-center gap-2 text-slate-800 dark:text-slate-100">
+                        매매 기록 <span class="text-sm font-normal text-slate-500">(최근 <span id="trade-count">0</span>건)</span>
+                    </h2>
+                    <button id="refresh-trades-btn" class="p-2 text-slate-400 hover:text-blue-500 dark:hover:text-blue-400 bg-transparent hover:bg-slate-100 dark:hover:bg-slate-700 rounded-full transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-blue-500" title="새로고침">
+                        <svg id="refresh-icon" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                    </button>
+                </div>
+                <div id="trades-log-container" class="w-full h-80 overflow-y-auto border border-slate-200 dark:border-slate-700 rounded-lg">
+                    <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700 relative">
+                        <thead class="hidden"><tr><th></th></tr></thead>
+                        <tbody id="trades-table-body" class="divide-y divide-slate-200 dark:divide-slate-700 bg-white dark:bg-slate-800 transition-colors">
+                            <tr><td colspan="6" class="px-4 py-10 text-center text-slate-500">매매 기록이 없습니다.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div> 
+    </div>
+
+    <script>
+        // ... (기존 변수 및 함수 유지) ...
+        // 🌟 [수정] 아래 함수들을 LUNCH_START, LUNCH_COND 처리를 위해 업데이트함
+
+        async function requestBulkSell() {
+            if (!confirm("🚨 정말로 모든 보유 종목을 시장가로 매도하시겠습니까?\n(이 작업은 되돌릴 수 없습니다!)")) {
+                return;
+            }
+            try {
+                const response = await fetchAPI('/api/bulk_sell', { method: 'POST' });
+                if (response && response.success) {
+                    showMessage("🚨 일괄 청산 명령이 전송되었습니다.", "success");
+                } else {
+                    showMessage("명령 전송 실패", "error");
+                }
+            } catch (e) {
+                showMessage("통신 오류 발생", "error");
+            }
+        }
+
+        const themeToggleBtn = document.getElementById('theme-toggle');
+        const darkIcon = document.getElementById('theme-toggle-dark-icon');
+        const lightIcon = document.getElementById('theme-toggle-light-icon');
+
+        function setTheme(isDark) {
+            if (isDark) { document.documentElement.classList.add('dark'); lightIcon.classList.remove('hidden'); darkIcon.classList.add('hidden'); } 
+            else { document.documentElement.classList.remove('dark'); darkIcon.classList.remove('hidden'); lightIcon.classList.add('hidden'); }
+        }
+        const isDarkMode = localStorage.getItem('color-theme') === 'dark' || (!('color-theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        setTheme(isDarkMode);
+
+        themeToggleBtn.addEventListener('click', () => {
+            const isDark = document.documentElement.classList.contains('dark');
+            setTheme(!isDark);
+            localStorage.setItem('color-theme', !isDark ? 'dark' : 'light');
+        });
+
+        async function fetchAPI(url, options = {}) {
+            try {
+                const cacheBuster = url.includes('?') ? `&t=${Date.now()}` : `?t=${Date.now()}`;
+                const response = await fetch(url + cacheBuster, options);
+                if (response.status === 401) { window.location.href = '/login.html'; return null; }
+                if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
+                return await response.json();
+            } catch (error) { return null; }
+        }
+
+        const settingsForm = document.getElementById('settings-form');
+        const saveButton = settingsForm.querySelector('button[type="submit"]');
+        const originalButtonText = saveButton.innerHTML; 
+        const statusContainer = document.getElementById('status-container');
+        const statusLight = document.getElementById('status-light');
+        const statusText = document.getElementById('status-text');
+        const statusSubtext = document.getElementById('status-subtext');
+        const messageBox = document.getElementById('message-box');
+        const tradingStateTable = document.getElementById('trading-state-table');
+        const stockCount = document.getElementById('stock-count');
+        const tradesTableBody = document.getElementById('trades-table-body');
+        const tradeCount = document.getElementById('trade-count');
+        const detectedTableBody = document.getElementById('detected-stocks-table');
+        const detectedCount = document.getElementById('detected-count');
+        const totalProfitVal = document.getElementById('total-profit-val');
+        const totalRateVal = document.getElementById('total-rate-val');
+        const realizedProfitVal = document.getElementById('realized-profit-val'); // 🌟 추가
+
+        let lastTradeCount = -1; 
+        
+        const schedulerCheck = document.getElementById('USE_SCHEDULER');
+        const schedulerOptions = document.getElementById('scheduler-options');
+        const manualConditionBox = document.getElementById('manual-condition-box');
+
+        function toggleSchedulerUI() {
+            if (schedulerCheck.checked) {
+                schedulerOptions.classList.remove('hidden');
+                manualConditionBox.classList.add('hidden');
+            } else {
+                schedulerOptions.classList.add('hidden');
+                manualConditionBox.classList.remove('hidden');
+            }
+        }
+        schedulerCheck.addEventListener('change', toggleSchedulerUI);
+
+        async function updateBotStatus() {
+            const data = await fetchAPI('/api/status'); 
+            if (data) {
+                let status = data.bot_status || "OFFLINE";
+                let activeMode = data.active_mode || "";
+                let isOffline = data.is_offline;
+                let lastSyncAgo = data.last_sync_ago || 999;
+
+                const summaryStatus = document.getElementById('display_BOT_STATUS');
+
+                if (isOffline || status === 'OFFLINE') {
+                    statusContainer.className = "flex flex-col items-center justify-center p-6 bg-slate-200 dark:bg-slate-700 rounded-xl transition-all duration-300 border-2 border-slate-300 dark:border-slate-600";
+                    statusLight.className = "w-6 h-6 rounded-full bg-slate-500 mb-2 shadow-lg";
+                    statusText.textContent = "⛔ 연결 끊김";
+                    statusText.className = "font-bold text-2xl tracking-tight text-slate-500 dark:text-slate-400";
+                    statusSubtext.textContent = `마지막 응답: ${lastSyncAgo}초 전`;
+                    
+                    if(summaryStatus) summaryStatus.innerHTML = '<span class="text-slate-500 font-bold">⛔ OFFLINE</span> <span class="text-xs text-red-400">(설정: ON)</span>';
+                
+                } else if (status === 'SLEEPING') {
+                    statusContainer.className = "flex flex-col items-center justify-center p-6 bg-purple-50 dark:bg-purple-900/20 rounded-xl transition-all duration-300 border-2 border-purple-200 dark:border-purple-800";
+                    statusLight.className = "w-6 h-6 rounded-full bg-purple-500 mb-2 shadow-[0_0_15px_rgba(168,85,247,0.5)]";
+                    statusText.textContent = "🌙 장 마감 대기";
+                    statusText.className = "font-bold text-2xl tracking-tight text-purple-600 dark:text-purple-400";
+                    statusSubtext.textContent = "봇이 휴식 중입니다 (매도 감시 중)";
+                    
+                    if(summaryStatus) summaryStatus.innerHTML = '<span class="text-purple-600 font-bold">🌙 대기 모드</span>';
+
+                } else if (status === 'RUNNING') {
+                    statusContainer.className = "flex flex-col items-center justify-center p-6 bg-green-50 dark:bg-green-900/20 rounded-xl transition-all duration-300 border-2 border-green-200 dark:border-green-800";
+                    statusLight.className = "w-6 h-6 rounded-full bg-green-500 mb-2 shadow-[0_0_15px_rgba(34,197,94,0.6)] animate-pulse-fast";
+                    statusText.textContent = "⚡ 가동 중";
+                    statusText.className = "font-bold text-2xl tracking-tight text-green-600 dark:text-green-400";
+                    statusSubtext.textContent = "실시간 매매 감시 중입니다";
+                    
+                    if(summaryStatus) summaryStatus.innerHTML = '<span class="text-green-600 font-bold">⚡ 가동 중</span>';
+
+                } else {
+                    statusContainer.className = "flex flex-col items-center justify-center p-6 bg-yellow-50 dark:bg-yellow-900/20 rounded-xl transition-all duration-300 border-2 border-yellow-200 dark:border-yellow-800";
+                    statusLight.className = "w-6 h-6 rounded-full bg-yellow-500 mb-2 shadow-lg";
+                    statusText.textContent = "⏸ 대기 중";
+                    statusText.className = "font-bold text-2xl tracking-tight text-yellow-600 dark:text-yellow-400";
+                    statusSubtext.textContent = "매수가 중지되었습니다";
+                    
+                    if(summaryStatus) summaryStatus.innerHTML = '<span class="text-yellow-500 font-bold">⏸ 정지됨</span>';
+                }
+
+                const badge = document.getElementById('mode-badge');
+                if (data.active_mode === 'REAL' || (activeMode && activeMode.includes('REAL'))) {
+                    badge.textContent = "🔴 실전투자";
+                    badge.className = "px-2 py-1 text-xs font-bold rounded bg-red-100 text-red-600 border border-red-200 animate-pulse shadow-sm";
+                } else {
+                    badge.textContent = "🟢 모의투자";
+                    badge.className = "px-2 py-1 text-xs font-bold rounded bg-green-100 text-green-600 border border-green-200 shadow-sm";
+                }
+                
+                updateTradingStateTable(data.trading_state);
+                
+                if (data.account_summary) {
+                    const sum = data.account_summary;
+                    
+                    // 🌟 실현손익 업데이트
+                    const rp = sum.realized_profit || 0;
+                    const rpClass = rp > 0 ? 'text-red-500' : (rp < 0 ? 'text-blue-500' : 'text-slate-500');
+                    realizedProfitVal.textContent = rp.toLocaleString() + '원';
+                    realizedProfitVal.className = `text-xs font-bold font-mono ${rpClass}`;
+
+                    const profitClass = sum.total_profit > 0 ? 'text-red-500' : (sum.total_profit < 0 ? 'text-blue-500' : 'text-slate-500');
+                    
+                    totalProfitVal.textContent = sum.total_profit.toLocaleString() + '원';
+                    totalProfitVal.className = `text-xs font-bold font-mono ${profitClass}`;
+                    
+                    totalRateVal.textContent = sum.total_rate.toFixed(2) + '%';
+                    totalRateVal.className = `text-xs font-bold font-mono ${profitClass}`;
+                } else {
+                    realizedProfitVal.textContent = '-';
+                    totalProfitVal.textContent = '-';
+                    totalRateVal.textContent = '-';
+                }
+            }
+        }
+
+        function updateTradingStateTable(state) {
+            tradingStateTable.innerHTML = '';
+            const stocks = state || {};
+            const keys = Object.keys(stocks);
+            stockCount.textContent = keys.length;
+
+            if (keys.length === 0) {
+                tradingStateTable.innerHTML = '<tr><td colspan="3" class="px-4 py-10 text-center text-slate-500">보유 종목이 없습니다.</td></tr>';
+                return;
+            }
+
+            keys.forEach(stockCode => {
+                const data = stocks[stockCode];
+                const profitRate = data.current_profit_rate || 0;
+                const totalBuyAmt = data.buy_price * data.buy_qty;
+                const profitAmt = Math.floor(totalBuyAmt * (profitRate / 100));
+                const profitAmtStr = profitAmt.toLocaleString();
+                const sign = profitAmt > 0 ? "+" : "";
+
+                let profitClass = profitRate > 0 ? 'text-red-500' : (profitRate < 0 ? 'text-blue-500' : 'text-slate-500');
+                const strategy = data.applied_strategy || { sl: '-', ts_start: '-', ts_stop: '-' };
+
+                const row = `
+                    <tr class="hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors border-b border-slate-100 dark:border-slate-700">
+                        <td class="px-4 py-3">
+                            <div class="font-bold text-slate-700 dark:text-slate-200">${data.stk_nm || stockCode}</div>
+                            <div class="text-xs text-slate-400 font-mono">${stockCode}</div>
+                            <div class="text-[10px] text-blue-500 mt-1">${data.condition_from || '알수없음'}</div>
+                        </td>
+                        <td class="px-4 py-3 text-center">
+                            <div class="text-base font-bold ${profitClass}">${profitRate.toFixed(2)}%</div>
+                            <div class="text-xs font-bold ${profitClass} mt-0.5">${sign}${profitAmtStr}원</div>
+                            <div class="text-xs text-slate-500 mt-1"><span class="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-600">${data.status || '대기'}</span></div>
+                        </td>
+                        <td class="px-4 py-3 text-right">
+                            <div class="text-sm font-medium text-slate-700 dark:text-slate-300">${(data.buy_price * data.buy_qty).toLocaleString()}원</div>
+                            <div class="text-xs text-slate-400 mb-1">${data.buy_qty}주 / 평단 ${(data.buy_price).toLocaleString()}</div>
+                            <div class="text-[10px] text-slate-400 bg-slate-100 dark:bg-slate-800 rounded px-1 py-0.5 inline-block">
+                                SL ${strategy.sl}% | TS ${strategy.ts_start}% / ${strategy.ts_stop}%
+                            </div>
+                        </td>
+                    </tr>`;
+                tradingStateTable.innerHTML += row;
+            });
+        }
+
+        async function updateDetectedStocks() {
+            const data = await fetchAPI('/api/current_conditions');
+            detectedTableBody.innerHTML = '';
+            if (data && data.stocks && data.stocks.length > 0) {
+                detectedCount.textContent = data.stocks.length;
+                data.stocks.forEach(stock => {
+                    const row = `
+                        <tr class="hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
+                            <td class="px-4 py-2 text-sm text-slate-500">${stock.time}</td>
+                            <td class="px-4 py-2 text-sm font-bold text-slate-700 dark:text-slate-200">${stock.name}</td>
+                            <td class="px-4 py-2 text-sm text-slate-400 text-xs">${stock.code}</td>
+                        </tr>`;
+                    detectedTableBody.innerHTML += row;
+                });
+            } else { detectedCount.textContent = 0; detectedTableBody.innerHTML = '<tr><td colspan="3" class="px-4 py-8 text-center text-slate-500 text-sm">현재 포착된 종목이 없습니다.</td></tr>'; }
+        }
+
+        async function loadSettings(onlySummary = false) {
+            const data = await fetchAPI('/api/settings');
+            if (data) {
+                if (!onlySummary) {
+                    Object.keys(data).forEach(key => {
+                        const el = document.getElementById(key);
+                        if (el) {
+                            if (el.type === 'checkbox') {
+                                el.checked = data[key] !== false;
+                                if(key === 'USE_SCHEDULER') toggleSchedulerUI();
+                            }
+                            else el.value = data[key];
+                        }
+                    });
+                }
+                
+                const simpleMappings = {
+                    MOCK_TRADE: val => val ? '<span class="text-green-600">🟢 모의투자</span>' : '<span class="text-red-600 animate-pulse">🔴 실전투자</span>',
+                    USE_MARKET_TIME: val => val ? '<span class="font-bold text-slate-700 dark:text-slate-200">⏰ 09:00~15:30</span>' : '<span class="font-bold text-purple-500">🌙 24시간</span>',
+                    USE_AUTO_SELL: val => val ? '<span class="font-bold text-blue-600">🛡️ 감시 ON</span>' : '<span class="font-bold text-red-500">⚠️ 감시 OFF</span>',
+                    USE_TELEGRAM: val => val ? '<span class="font-bold text-blue-500">🔔 ON</span>' : '<span class="font-bold text-slate-400">🔕 OFF</span>',
+                    DEBUG_MODE: val => val ? '<span class="font-bold text-orange-500">🕵️ ON</span>' : '<span class="font-bold text-slate-400">🔒 OFF</span>',
+                    USE_SCHEDULER: val => val ? '<span class="font-bold text-blue-500">⏰ ON</span>' : '<span class="font-bold text-slate-400">OFF</span>',
+                    ORDER_AMOUNT: val => val.toLocaleString() + ' 원',
+                    STOP_LOSS_RATE: val => val + ' %',
+                    TRAILING_START_RATE: val => val + ' %',
+                    TRAILING_STOP_RATE: val => val + ' %',
+                    RE_ENTRY_COOLDOWN_MIN: val => val + ' 분',
+                    OVERNIGHT_COND_IDS: val => val 
+                };
+
+                for (const [key, formatter] of Object.entries(simpleMappings)) {
+                    const el = document.getElementById('display_' + key);
+                    if (el && data[key] !== undefined) el.innerHTML = formatter(data[key]);
+                }
+
+                const condEl = document.getElementById('display_CONDITION_NAME');
+                const select = document.getElementById('CONDITION_ID');
+                let condName = data.CONDITION_ID || "선택 안됨";
+                if (select.options.length > 0) {
+                    for (let i = 0; i < select.options.length; i++) {
+                        if (select.options[i].value == data.CONDITION_ID) { condName = select.options[i].text; break; }
+                    }
+                }
+                condEl.textContent = condName;
+                
+                const hogaEl = document.getElementById('display_MIN_BUY_SELL_RATIO');
+                if(hogaEl && data.MIN_BUY_SELL_RATIO !== undefined) {
+                    hogaEl.innerHTML = `<strong>${data.MIN_BUY_SELL_RATIO}</strong> <span class="text-xs text-slate-400">(${data.MIN_BUY_SELL_RATIO >= 1 ? '보수적' : '공격적'})</span>`;
+                }
+            }
+        }
+
+        async function loadConditions() {
+            const data = await fetchAPI('/api/conditions');
+            const selectEl = document.getElementById('CONDITION_ID');
+            const morningSelect = document.getElementById('MORNING_COND');
+            const lunchSelect = document.getElementById('LUNCH_COND'); // 점심 추가
+            const afternoonSelect = document.getElementById('AFTERNOON_COND');
+            
+            [selectEl, morningSelect, lunchSelect, afternoonSelect].forEach(el => el.innerHTML = ''); 
+
+            if (data && data.conditions && data.conditions.length > 0) {
+                data.conditions.forEach(cond => {
+                    const option = document.createElement('option');
+                    option.value = cond.id;
+                    option.textContent = `${cond.name} (${cond.id})`;
+                    
+                    selectEl.appendChild(option.cloneNode(true));
+                    morningSelect.appendChild(option.cloneNode(true));
+                    lunchSelect.appendChild(option.cloneNode(true)); // 점심 추가
+                    afternoonSelect.appendChild(option.cloneNode(true));
+                });
+                loadSettings(); 
+            } else { 
+                const opt = '<option value="">조건검색식 없음</option>';
+                [selectEl, morningSelect, lunchSelect, afternoonSelect].forEach(el => el.innerHTML = opt);
+            }
+        }
+        
+        async function loadTradesLog(forceUpdate = false) {
+            const data = await fetchAPI('/api/trades');
+            if (data && data.trades) {
+                if (!forceUpdate && data.trades.length === lastTradeCount) return;
+                lastTradeCount = data.trades.length;
+                tradeCount.textContent = lastTradeCount;
+                tradesTableBody.innerHTML = ''; 
+
+                if (lastTradeCount > 0) {
+                    data.trades.forEach(trade => {
+                        const actionBadge = trade.action === 'BUY' 
+                            ? '<span class="px-2 py-0.5 rounded text-xs font-bold bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-300">매수</span>'
+                            : (trade.action === 'SELL' 
+                                ? '<span class="px-2 py-0.5 rounded text-xs font-bold bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">매도</span>' 
+                                : '<span class="px-2 py-0.5 rounded text-xs font-bold bg-gray-100 text-gray-600">기타</span>');
+                        const profit = parseFloat(trade.profit);
+                        const profitColor = profit > 0 ? 'text-red-500' : (profit < 0 ? 'text-blue-500' : 'text-slate-400');
+                        const profitText = trade.action === 'SELL' ? `<span class="font-bold ${profitColor}">${trade.profit}%</span>` : '';
+                        const row = `
+                            <tr class="border-b border-slate-100 dark:border-slate-700/50 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
+                                <td colspan="6" class="p-4">
+                                    <div class="flex justify-between items-start mb-1">
+                                        <div class="flex items-center gap-2">
+                                            ${actionBadge}
+                                            <span class="font-bold text-slate-800 dark:text-slate-200 text-sm md:text-base">${trade.name}</span>
+                                            <span class="text-xs text-slate-400">(${trade.code || '-'})</span>
+                                        </div>
+                                        <div class="text-right">${profitText}</div>
+                                    </div>
+                                    <div class="flex justify-between items-center text-xs md:text-sm text-slate-500 dark:text-slate-400">
+                                        <div class="flex gap-2 items-center">
+                                            <span>${trade.time.split(' ')[1]}</span>
+                                            <span class="w-px h-3 bg-slate-300 dark:bg-slate-600"></span>
+                                            <span>${parseInt(trade.price).toLocaleString()}원</span>
+                                            <span class="text-slate-400">x ${trade.qty}</span>
+                                        </div>
+                                        <div class="truncate max-w-[120px] md:max-w-xs text-slate-400" title="${trade.reason}">${trade.reason}</div>
+                                    </div>
+                                </td>
+                            </tr>`;
+                        tradesTableBody.innerHTML += row;
+                    });
+                } else { tradesTableBody.innerHTML = '<tr><td colspan="6" class="px-4 py-10 text-center text-slate-500">매매 기록이 없습니다.</td></tr>'; }
+            }
+        }
+
+        function showMessage(message, type = 'success') {
+            messageBox.classList.remove('hidden', 'animate-fade-out-up');
+            messageBox.className = `fixed top-10 left-1/2 transform -translate-x-1/2 z-50 min-w-[320px] max-w-md px-6 py-4 rounded-xl shadow-2xl font-bold text-sm md:text-base text-center animate-fade-in-down backdrop-blur-md border transition-all ${type === 'success' ? 'bg-green-600/95 text-white border-green-500' : 'bg-red-600/95 text-white border-red-500'}`;
+            messageBox.textContent = message;
+            setTimeout(() => { messageBox.classList.remove('animate-fade-in-down'); messageBox.classList.add('animate-fade-out-up'); setTimeout(() => messageBox.classList.add('hidden'), 500); }, 3000);
+        }
+
+        settingsForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            saveButton.disabled = true;
+            saveButton.innerHTML = `<span class="loader-white"></span> 저장 중...`;
+            const isMockCheck = document.getElementById('MOCK_TRADE').checked;
+            const formData = new FormData(settingsForm);
+            const settings = Object.fromEntries(formData.entries());
+            
+            settings.ORDER_AMOUNT = parseInt(settings.ORDER_AMOUNT);
+            settings.STOP_LOSS_RATE = parseFloat(settings.STOP_LOSS_RATE);
+            settings.TRAILING_START_RATE = parseFloat(settings.TRAILING_START_RATE);
+            settings.TRAILING_STOP_RATE = parseFloat(settings.TRAILING_STOP_RATE);
+            settings.RE_ENTRY_COOLDOWN_MIN = parseInt(settings.RE_ENTRY_COOLDOWN_MIN);
+            settings.MIN_BUY_SELL_RATIO = parseFloat(settings.MIN_BUY_SELL_RATIO);
+            
+            settings.USE_MARKET_TIME = document.getElementById('USE_MARKET_TIME').checked;
+            settings.USE_AUTO_SELL = document.getElementById('USE_AUTO_SELL').checked;
+            settings.USE_TELEGRAM = document.getElementById('USE_TELEGRAM').checked;
+            settings.DEBUG_MODE = document.getElementById('DEBUG_MODE').checked;
+            settings.MOCK_TRADE = document.getElementById('MOCK_TRADE').checked;
+            settings.USE_SCHEDULER = document.getElementById('USE_SCHEDULER').checked;
+
+            if (!isMockCheck) {
+                if (!confirm("⚠️ [경고] '실전 투자' 모드입니다!\n정말로 저장하시겠습니까?")) {
+                    document.getElementById('MOCK_TRADE').checked = true;
+                    saveButton.disabled = false; saveButton.innerHTML = originalButtonText; return; 
+                }
+            }
+            try {
+                await fetchAPI('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) });
+                showMessage('설정이 저장되었습니다.');
+                updateBotStatus(); loadSettings(); 
+            } catch (error) {} finally { saveButton.disabled = false; saveButton.innerHTML = originalButtonText; }
+        });
+        
+        document.getElementById('logout-button').addEventListener('click', async () => { await fetchAPI('/api/logout', { method: 'POST' }); window.location.href = '/login.html'; });
+        document.getElementById('refresh-trades-btn').addEventListener('click', async () => {
+            const btn = document.getElementById('refresh-trades-btn'); const icon = document.getElementById('refresh-icon');
+            btn.disabled = true; icon.classList.add('animate-spin', 'text-blue-600', 'dark:text-blue-400');
+            try { await Promise.all([ loadTradesLog(true), new Promise(resolve => setTimeout(resolve, 600)) ]); showMessage('매매 기록 갱신 완료', 'success'); } 
+            catch (error) { showMessage('갱신 실패', 'error'); } finally { icon.classList.remove('animate-spin', 'text-blue-600', 'dark:text-blue-400'); btn.disabled = false; }
+        });
+
+        function initializeDashboard() {
+            loadConditions(); loadTradesLog(); updateBotStatus(); updateDetectedStocks();
+            setInterval(() => { 
+                updateBotStatus(); 
+                loadTradesLog(); 
+                updateDetectedStocks();
+                loadSettings(true); 
+            }, 3000); 
+        }
+        initializeDashboard();
+    </script>
+</body>
+</html>
