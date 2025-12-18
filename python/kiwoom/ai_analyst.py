@@ -135,7 +135,7 @@ def ask_ai_to_buy(image_path):
             
     except Exception as e:
         ai_logger.error(f"AI 분석 중 오류: {e}")
-        return False, f"AI Error: {str(e)}"
+        return True, f"AI Error: {str(e)}"
 
 # --- 테스트 실행 코드 (필요 없으면 삭제) ---
 if __name__ == "__main__":
