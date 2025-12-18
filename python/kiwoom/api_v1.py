@@ -388,7 +388,8 @@ def fn_ka10080_get_minute_chart(stock_code: str, tick: str = "3"):
                 
                 # 응답 헤더에서 다음 키 추출
                 # 키움 API 응답 헤더 키는 소문자일 수도 있으니 주의
-                current_next_key = response_headers.get('next-key', '').strip()
+                current_next_key = response_headers.get('next-key') or response_headers.get('Next-Key') or ""
+                current_next_key = current_next_key.strip()
                 current_cont_yn = response_headers.get('cont-yn', 'N').strip()
                 
                 if not current_next_key or current_cont_yn != 'Y': 
