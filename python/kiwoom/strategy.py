@@ -7,7 +7,7 @@ import asyncio
 import traceback
 import signal
 import hashlib
-import queue  # 스레드 간 통신용 (웹소켓 매니저가 스레드 기반이므로)
+import queue  # 스레드 간 통신용
 import exchange_calendars as xcals
 from datetime import datetime, timedelta
 from logging.handlers import TimedRotatingFileHandler
@@ -24,7 +24,7 @@ from api_v1 import (
     fn_kt10001_sell_order,
     fn_kt10003_cancel_order,
     fn_ka10004_get_hoga,
-    fn_ka10080_get_minute_chart,  # 🌟 [수정] 차트 조회 함수 임포트 추가
+    fn_ka10080_get_minute_chart,
     fn_ka10074_get_daily_profit,
     set_api_debug_mode
 )
@@ -55,10 +55,10 @@ TRADES_FILE = os.path.join(DATA_DIR, "trades.log")
 CURRENT_CONDITIONS_FILE = os.path.join(DATA_DIR, "current_conditions.json")
 CONDITIONS_NAME_FILE = os.path.join(DATA_DIR, "conditions.json")
 
-# 🌟 [변경] asyncio 큐 사용
+# asyncio 큐 사용
 TELEGRAM_QUEUE = asyncio.Queue()
 
-# 🌟 [최적화] 실현손익 관련 전역 변수
+# 실현손익 관련 전역 변수
 TODAY_REALIZED_PROFIT = 0
 LAST_PROFIT_CHECK_TIME = datetime.min
 
@@ -118,7 +118,6 @@ async def run_blocking(func, *args, **kwargs):
     asyncio 루프가 멈추지 않게 합니다.
     """
     loop = asyncio.get_running_loop()
-    # 키워드 인자 처리를 위해 partial 사용
     func_call = partial(func, *args, **kwargs)
     return await loop.run_in_executor(None, func_call)
 
@@ -135,22 +134,43 @@ def parse_price(price_str):
     except ValueError: return 0
 
 # ---------------------------------------------------------
-# 5. 텔레그램 및 리포트 (비동기 변환)
+# 5. 텔레그램 및 리포트 (사진전송 + 리포트 로직 수정)
 # ---------------------------------------------------------
 async def _telegram_worker():
-    """ 텔레그램 메시지 전송 비동기 워커 """
-    import requests # 내부 임포트
+    """ 텔레그램 메시지(텍스트/사진) 전송 비동기 워커 """
+    import requests
+    
+    # 동기식 사진 전송 함수 (스레드 내부 실행용)
+    def _send_photo_sync(token, chat_id, photo_path, caption):
+        url = f"https://api.telegram.org/bot{token}/sendPhoto"
+        with open(photo_path, 'rb') as f:
+            files = {'photo': f}
+            data = {'chat_id': chat_id, 'caption': caption, 'parse_mode': 'HTML'}
+            requests.post(url, data=data, files=files, timeout=10)
+            
     while True:
         try:
-            msg = await TELEGRAM_QUEUE.get()
-            if msg is None: break
+            item = await TELEGRAM_QUEUE.get()
+            if item is None: break
 
             if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
                 try:
-                    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-                    params = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"}
-                    # requests.get은 동기식이므로 스레드 풀로 위임
-                    await run_blocking(requests.get, url, params=params, timeout=5)
+                    # 1. 텍스트 메시지인 경우
+                    if isinstance(item, str):
+                        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+                        params = {"chat_id": TELEGRAM_CHAT_ID, "text": item, "parse_mode": "HTML"}
+                        await run_blocking(requests.get, url, params=params, timeout=5)
+                    
+                    # 2. 사진 메시지인 경우 (딕셔너리 형태)
+                    elif isinstance(item, dict) and item.get('type') == 'photo':
+                        path = item.get('path')
+                        caption = item.get('caption')
+                        if path and os.path.exists(path):
+                            await run_blocking(_send_photo_sync, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, path, caption)
+                            # 전송 후 이미지 삭제
+                            try: os.remove(path)
+                            except: pass
+                            
                 except Exception as e:
                     strategy_logger.error(f"텔레그램 전송 실패: {e}")
 
@@ -162,11 +182,19 @@ async def _telegram_worker():
             await asyncio.sleep(1)
 
 def send_telegram_msg(msg):
-    """ 메시지를 큐에 넣습니다. (비동기 큐 사용) """
+    """ 텍스트 메시지를 큐에 넣습니다. """
     if not BOT_SETTINGS.get("USE_TELEGRAM", True): return
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
     try:
         TELEGRAM_QUEUE.put_nowait(msg)
+    except Exception: pass
+
+def send_telegram_photo(path, caption):
+    """ 사진 메시지(캡션 포함)를 큐에 넣습니다. """
+    if not BOT_SETTINGS.get("USE_TELEGRAM", True): return
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
+    try:
+        TELEGRAM_QUEUE.put_nowait({'type': 'photo', 'path': path, 'caption': caption})
     except Exception: pass
 
 async def send_daily_report():
@@ -176,7 +204,6 @@ async def send_daily_report():
 
         total_buy_cnt = 0; total_sell_cnt = 0; win_cnt = 0; loss_cnt = 0; log_profit = 0
 
-        # 파일 읽기도 비동기로 위임
         if await run_blocking(os.path.exists, TRADES_FILE):
             def read_log():
                 with open(TRADES_FILE, 'r', encoding='utf-8') as f:
@@ -201,8 +228,7 @@ async def send_daily_report():
                                 log_profit += int(p_parts[1].strip())
                     except: pass
 
-        if total_buy_cnt == 0 and total_sell_cnt == 0: return
-
+        # 매매 내역이 없어도 리포트 전송
         final_profit = server_profit if server_profit is not None else log_profit
         source_msg = "(서버 확정)" if server_profit is not None else "(예상 추정치)"
 
@@ -227,7 +253,8 @@ async def send_daily_report():
     except Exception as e:
         strategy_logger.error(f"리포트 생성 실패: {e}")
 
-async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=0, profit_amt=0, peak_rate=0):
+# 🌟 [수정] log_trade에 ai_reason 인자 추가 및 메시지 반영
+async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=0, profit_amt=0, peak_rate=0, image_path=None, ai_reason=None):
     try:
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         price_str = f"{price:,}"
@@ -241,7 +268,13 @@ async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=
         print(f"📝 [매매기록] {action} {stk_nm} ({profit_str}%) - {reason}")
 
         emoji = "🔴 매수" if action == "BUY" else "🔵 매도"
-        tg_msg = f"{emoji} 체결 알림\n사유: {reason}\n종목: {stk_nm} ({stock_code})\n가격: {price_str}원\n수량: {qty}주"
+        tg_msg = f"{emoji} <b>체결 알림</b>"
+        
+        # 🌟 AI 분석 사유가 있으면 추가
+        if action == "BUY" and ai_reason:
+            tg_msg += f"\n🤖 <b>AI분석:</b> {ai_reason}"
+            
+        tg_msg += f"\n사유: {reason}\n종목: {stk_nm} ({stock_code})\n가격: {price_str}원\n수량: {qty}주"
 
         if action == "SELL":
             res_emoji = "💰" if profit_rate > 0 else "💧"
@@ -249,7 +282,12 @@ async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=
             tg_msg += f"\n💵 손익금: {int(profit_amt):,}원"
             tg_msg += f"\n📈 최고점: {peak_rate:.2f}%"
 
-        send_telegram_msg(tg_msg)
+        # 이미지가 있으면 사진 전송, 없으면 텍스트 전송
+        if image_path:
+            send_telegram_photo(image_path, tg_msg)
+        else:
+            send_telegram_msg(tg_msg)
+            
     except Exception as e: strategy_logger.error(f"로그 작성 실패: {e}")
 
     try:
@@ -264,9 +302,6 @@ async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=
 # 6. 핵심 로직 및 스케줄러
 # ---------------------------------------------------------
 def is_market_open():
-    """ 
-    장 운영 시간 및 휴장일 자동 확인 (하드코딩 시간 체크 + 라이브러리 휴장일 체크)
-    """
     use_market_time = BOT_SETTINGS.get("USE_MARKET_TIME", True)
     if not use_market_time: return True
 
@@ -274,17 +309,12 @@ def is_market_open():
         now = datetime.now()
         current_time = now.time()
         
-        # 1. 시간으로 1차 필터링 (가장 확실한 방법)
-        # 09:00:00 ~ 15:30:00 사이가 아니면 무조건 장 마감으로 처리
-        # (TIP: 장 마감 동시호가 때 매수를 피하고 싶다면 15:20:00으로 설정하세요)
         start_time = datetime.strptime("09:00:00", "%H:%M:%S").time()
         end_time = datetime.strptime("15:20:00", "%H:%M:%S").time() 
         
         if current_time < start_time or current_time > end_time:
             return False
 
-        # 2. 오늘은 평일(개장일)인가? (exchange_calendars 라이브러리 활용)
-        # 주말이나 공휴일 체크는 라이브러리에 맡깁니다.
         xkrx = xcals.get_calendar("XKRX")
         if not xkrx.is_session(now.strftime("%Y-%m-%d")):
             return False
@@ -293,83 +323,62 @@ def is_market_open():
 
     except Exception as e:
         strategy_logger.error(f"장 운영 시간 확인 중 오류: {e}")
-        # 오류 발생 시 비상 로직 (평일 09:00 ~ 15:30)
         if now.weekday() < 5:
             start = datetime.strptime("09:00:00", "%H:%M:%S").time()
             end = datetime.strptime("15:20:00", "%H:%M:%S").time()
             return start <= current_time <= end
         return False
 
-# 🌟 [추가] 차트 패턴 정밀 분석 함수
+# 🌟 [수정] 차트 패턴 정밀 분석 함수 (반환값: is_good, image_path, reason)
 async def analyze_chart_pattern(stock_code):
     """
-    1단계: 수식 기반 필터링 (윗꼬리, 거래량)
-    2단계: AI 시각 분석 (이미지 인식)
+    Returns: (is_good, image_path, reason)
     """
     try:
-        # 1. 차트 데이터 조회 (3분봉)
         chart_data = await run_blocking(fn_ka10080_get_minute_chart, stock_code, tick="3")
         
         if not chart_data or len(chart_data) < 20:
-            return True # 데이터 부족하면 일단 패스 (혹은 False)
+            return True, None, None
 
-        # -------------------------------------------------------
-        # [Step 1] 기존의 수식 기반 1차 필터링 (속도 빠름)
-        # -------------------------------------------------------
-        last_candle = chart_data[1] # 직전 완성봉 (0번은 진행중인 봉일 수 있음)
-        
-        # 🌟 [수정] API 문서 기준 올바른 필드명 적용 (open_prc -> open_pric 등)
-        # 만약 값이 없을 경우를 대비해 get()과 기본값 0 처리
+        # [Step 1] 수식 기반 필터링
+        last_candle = chart_data[1] 
         open_p = abs(int(last_candle.get('open_pric', 0)))
-        close_p = abs(int(last_candle.get('cur_prc', 0)))   # 종가는 cur_prc
+        close_p = abs(int(last_candle.get('cur_prc', 0)))
         high_p = abs(int(last_candle.get('high_pric', 0)))
         low_p = abs(int(last_candle.get('low_pric', 0)))
         
-        # 데이터 유효성 검사 (시가가 0이면 데이터 오류)
         if open_p == 0:
-            strategy_logger.warning(f"⚠️ 차트 데이터 필드 오류 ({stock_code}): {list(last_candle.keys())[:5]}...")
-            return True 
+            strategy_logger.warning(f"⚠️ 차트 데이터 필드 오류 ({stock_code})")
+            return True, None, None
 
-        # 윗꼬리 40% 이상이면 탈락
         total_len = high_p - low_p
         upper_shadow = high_p - close_p if close_p > open_p else high_p - open_p
         
         if total_len > 0 and (upper_shadow / total_len) > 0.4:
             strategy_logger.info(f"🛡️ [1차필터] {stock_code}: 윗꼬리 과다 -> 진입 포기")
-            return False
+            return False, None, "1차필터(윗꼬리) 탈락"
 
-        # -------------------------------------------------------
-        # [Step 2] AI 시각 분석 (정확도 높음, 약 2~3초 소요)
-        # -------------------------------------------------------
-        # 1차 필터를 통과한 '우량 후보'만 AI에게 검사 맡김 (비용/시간 절약)
-        
-        # 종목명 가져오기 (차트 제목용)
+        # [Step 2] AI 시각 분석
         stk_nm = "Stock"
-        # (주의: WS 매니저가 있으면 거기서, 없으면 API로. 여기선 간단히 처리)
-        
-        # 1) 차트 이미지 생성 (Blocking I/O라 스레드풀 사용 권장)
         image_path = await run_blocking(create_chart_image, stock_code, stk_nm, chart_data)
         
         if image_path:
-            # 2) AI에게 물어보기
             is_buy, reason = await run_blocking(ask_ai_to_buy, image_path)
-            
-            # 이미지 파일 삭제 (용량 관리)
-            try: os.remove(image_path)
-            except: pass
             
             if is_buy:
                 strategy_logger.info(f"🤖 [AI승인] {stock_code}: 매수 추천! ({reason})")
-                return True
+                return True, image_path, reason
             else:
                 strategy_logger.info(f"🛡️ [AI거절] {stock_code}: 매수 보류 ({reason})")
-                return False
+                try: os.remove(image_path)
+                except: pass
+                return False, None, reason
         
-        return True # 이미지 생성 실패 시엔 1차 필터 믿고 진행
+        return True, None, None
 
     except Exception as e:
         strategy_logger.error(f"차트 분석 중 오류 ({stock_code}): {e}")
-        return True
+        return True, None, None
         
 async def apply_condition_preset(target_id):
     if target_id in STRATEGY_PRESETS:
@@ -655,7 +664,6 @@ async def _load_initial_balance():
     initial_stocks = []
     initial_balance = None
     for retry in range(3):
-        # 🌟 API 호출 비동기 실행
         initial_balance = await run_blocking(fn_kt00018_get_account_balance)
         if initial_balance is not None: break
         strategy_logger.warning(f"잔고 조회 실패. 1초 후 재시도 ({retry+1}/3)...")
@@ -784,7 +792,6 @@ async def check_for_new_stocks():
             condition_names = await run_blocking(_read_cond_names)
     except: pass
 
-    # 🌟 [비동기] 큐에 쌓인 이벤트 모두 처리
     while True:
         event = ws_manager.pop_condition_event()
         if not event: break
@@ -815,14 +822,12 @@ async def check_for_new_stocks():
         strategy_logger.info(f"🔔 [조건포착] {stk_name} ({stock_code}) 확인 중...")
 
         PROCESSING_STOCKS.add(stock_code)
-        # 🌟 asyncio.sleep으로 변경
         await asyncio.sleep(0.1)
 
         try:
             stock_info = None
             current_price = 0
             for attempt in range(3):
-                # 🌟 API 호출 비동기 위임
                 stock_info = await run_blocking(fn_ka10001_get_stock_info, stock_code)
                 if stock_info:
                     current_price = abs(stock_info.get('현재가', 0))
@@ -852,14 +857,19 @@ async def check_for_new_stocks():
                     else: continue
                 else: continue
 
-            # 🌟 [수정] 차트 패턴 정밀 분석 (윗꼬리/거래량)
-            is_good_chart = await analyze_chart_pattern(stock_code)
+            # 🌟 [수정] 차트 분석 (반환값 3개로 언패킹)
+            is_good_chart, image_path, ai_reason = await analyze_chart_pattern(stock_code)
+            
             if not is_good_chart:
                 RE_ENTRY_COOLDOWN[stock_code] = datetime.now() + timedelta(minutes=10)
                 continue
 
             buy_qty = int((order_amount * 0.95) // current_price)
-            if buy_qty == 0: continue
+            if buy_qty == 0:
+                if image_path:
+                    try: os.remove(image_path)
+                    except: pass
+                continue
 
             BUY_ATTEMPT_HISTORY[stock_code] = datetime.now()
 
@@ -867,11 +877,11 @@ async def check_for_new_stocks():
             cond_info_str = f"{condition_id}:{current_cond_name}"
             PENDING_ORDER_CONDITIONS[stock_code] = cond_info_str
 
-            # 🌟 주문 API 비동기 위임
             ord_no = await run_blocking(fn_kt10000_buy_order, stock_code, buy_qty, price=0)
 
             if ord_no:
-                await log_trade(stock_code, stk_nm, "BUY", buy_qty, current_price, f"조건검색({condition_id})")
+                # 🌟 [수정] log_trade에 ai_reason 전달
+                await log_trade(stock_code, stk_nm, "BUY", buy_qty, current_price, f"조건검색({condition_id})", image_path=image_path, ai_reason=ai_reason)
                 TRADING_STATE[stock_code] = {
                     "stk_nm": stk_nm, "buy_price": current_price, "buy_qty": buy_qty,
                     "trailing_active": False, "peak_profit_rate": 0.0,
@@ -884,15 +894,15 @@ async def check_for_new_stocks():
                 print(f"✅ [주문성공] 주문번호: {ord_no}")
             else:
                 strategy_logger.error(f"❌ [주문실패] {stk_nm}: API 응답 없음")
+                if image_path:
+                    try: os.remove(image_path)
+                    except: pass
 
             await save_status_to_file(force=True)
             
         finally:
             if stock_code in PROCESSING_STOCKS: 
                 PROCESSING_STOCKS.remove(stock_code)
-            
-            # 🌟 [수정/추가] 종목 하나 처리 후 API 쿨타임 확보를 위해 대기 시간 증가
-            # 기존 0.1초 등 짧은 대기가 있다면 삭제하고 아래 코드로 대체
             await asyncio.sleep(1.0)
 
 async def try_market_close_liquidation():
@@ -1156,7 +1166,6 @@ def setup_logging():
 async def main():
     global ws_manager, BOT_SETTINGS, TRADING_STATE
 
-    # Graceful Exit 설정
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
 
@@ -1164,17 +1173,14 @@ async def main():
         print("\n[System] 종료 신호 수신! 정리 작업 시작...")
         stop_event.set()
 
-    # 시그널 핸들러 등록 (Windows에서는 loop.add_signal_handler 지원 안 함 주의)
     if sys.platform != "win32":
         loop.add_signal_handler(signal.SIGTERM, _handle_exit)
         loop.add_signal_handler(signal.SIGINT, _handle_exit)
     else:
-        # Windows 개발 환경용
         signal.signal(signal.SIGINT, lambda s, f: _handle_exit())
         signal.signal(signal.SIGTERM, lambda s, f: _handle_exit())
 
     setup_logging()
-    # 텔레그램 워커 태스크 시작
     telegram_task = asyncio.create_task(_telegram_worker())
 
     await run_self_diagnosis()
@@ -1202,7 +1208,6 @@ async def main():
 
     initial_stocks = await _load_initial_balance()
     ws_manager = KiwoomWebSocketManager()
-    # 웹소켓 매니저는 내부적으로 스레드를 쓰므로 start()는 동기 호출
     ws_manager.start(stock_list=initial_stocks, account_list=["00", "04"])
 
     await asyncio.sleep(5)
@@ -1219,7 +1224,7 @@ async def main():
 
     while not stop_event.is_set():
         try:
-            # 1. 백테스팅 요청 확인 (파일 I/O 비동기화)
+            # 1. 백테스팅 요청 확인
             backtest_req_file = os.path.join(DATA_DIR, "backtest_req.json")
             if await run_blocking(os.path.exists, backtest_req_file):
                 try:
@@ -1233,7 +1238,6 @@ async def main():
                         except: pass
                         strategy_logger.info("📊 백테스팅 요청 감지! 시뮬레이션 시작...")
 
-                        # 백테스팅은 오래 걸리므로 스레드에서 실행
                         def run_bt(signals, settings):
                             try:
                                 results = run_simulation_for_list(signals, settings)
@@ -1243,7 +1247,6 @@ async def main():
                             except Exception as e:
                                 strategy_logger.error(f"백테스팅 오류: {e}")
 
-                        # 백테스트 실행 (Fire and Forget)
                         await run_blocking(run_bt, req_data.get('signals', []), BOT_SETTINGS)
                 except Exception as e:
                     try: await run_blocking(os.remove, backtest_req_file)
@@ -1273,10 +1276,9 @@ async def main():
             elif bot_status == "RUNNING":
                 if not is_market_open():
                     now_time = datetime.now().time()
-                    # 리포트 전송 (15시 40분 이후에 아직 안 보냈다면 전송)
                     current_date_str = datetime.now().strftime('%Y-%m-%d')
-                    # 수정: 40분이 '지났으면' 보내도록 변경 (>= 40)
-                    if datetime.now().hour == 15 and datetime.now().minute >= 40:
+                    
+                    if (datetime.now().hour == 15 and datetime.now().minute >= 40) or (datetime.now().hour > 15):
                         if last_report_date != current_date_str:
                             await send_daily_report()
                             last_report_date = current_date_str
@@ -1303,7 +1305,6 @@ async def main():
                     await asyncio.sleep(1)
                     continue
 
-                # 장 중 로직
                 current_time = datetime.now().time()
                 market_start_guard = datetime.strptime("09:00:30", "%H:%M:%S").time()
                 if current_time < market_start_guard:
@@ -1318,7 +1319,6 @@ async def main():
                     send_telegram_msg(msg)
                     last_alive_log = datetime.now()
 
-                # 비동기 함수 실행
                 await check_for_new_stocks()
 
                 if (datetime.now() - last_slow_check).total_seconds() > 2.0:
@@ -1366,7 +1366,6 @@ async def main():
             send_telegram_msg(f"🔥 [오류 발생] 봇이 멈췄습니다!\n{str(e)}")
             await asyncio.sleep(5)
 
-    # 종료 처리
     if ws_manager and BOT_SETTINGS.get("BOT_STATUS") != "RESTARTING":
         ws_manager.stop()
     await save_status_to_file(force=True)

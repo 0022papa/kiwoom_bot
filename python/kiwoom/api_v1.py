@@ -355,7 +355,7 @@ def fn_ka10080_get_minute_chart(stock_code: str, tick: str = "3"):
     3분봉 차트 조회 (백테스팅용, 최대 30페이지) 
     🌟 [수정] Header의 next-key를 이용한 올바른 페이징 구현
     """
-    MAX_PAGES = 30
+    MAX_PAGES = 2
     all_chart_data = []
     
     current_next_key = ""
