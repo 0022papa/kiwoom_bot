@@ -41,6 +41,9 @@ class KiwoomWebSocketManager:
         self.data_lock = threading.Lock()
         self.file_lock = threading.Lock() 
         
+        # 🌟 [수정] 이벤트 루프 준비 완료 신호용 이벤트 추가
+        self.loop_ready_event = threading.Event()
+        
         # 메인 로직으로 이벤트를 전달하는 큐
         self.condition_queue = queue.Queue() 
         
@@ -166,7 +169,6 @@ class KiwoomWebSocketManager:
             
             ws_logger.info("🔑 [접속시도] 토큰 발급 요청 중...")
             try:
-                # 동기 함수인 fn_au10001을 별도 스레드에서 실행 (블로킹 방지)
                 self._token = await asyncio.wait_for(
                     loop.run_in_executor(None, fn_au10001),
                     timeout=10.0
@@ -194,18 +196,15 @@ class KiwoomWebSocketManager:
                 self.ws_conn = ws
                 ws_logger.info("✅ WebSocket 연결 성공. 로그인 패킷 전송...")
                 
-                # 로그인 패킷 전송
                 await ws.send(json.dumps({'trnm': 'LOGIN', 'token': self._token}))
                 
                 if self.debug_mode: ws_logger.debug("📤 [WS_SEND] 로그인 요청 (LOGIN)")
                 
-                # 태스크 생성
                 consumer_task = asyncio.create_task(self._message_consumer(ws)) 
                 command_task = asyncio.create_task(self._command_processor(ws))
                 heartbeat_task = asyncio.create_task(self._keep_alive_loop(ws)) 
                 stop_wait_task = asyncio.create_task(self._stop_event.wait())     
                 
-                # 하나라도 끝나면(연결 끊김 등) 모두 종료
                 done, pending = await asyncio.wait(
                     [consumer_task, command_task, heartbeat_task, stop_wait_task],
                     return_when=asyncio.FIRST_COMPLETED
@@ -231,7 +230,6 @@ class KiwoomWebSocketManager:
                     data = json.loads(message)
                     trnm = data.get('trnm')
 
-                    # 실시간 체결 데이터는 로그가 너무 많으므로 제외
                     if self.debug_mode and trnm not in ['REAL', 'PING']:
                         ws_logger.debug(f"📥 [WS_RECV] {trnm}")
 
@@ -241,7 +239,6 @@ class KiwoomWebSocketManager:
                             ws_logger.info("🎉 로그인 승인 완료! 기존 구독을 복구합니다.")
                             await self._request_condition_list(ws)
                             
-                            # 끊기기 전 구독했던 목록 복구
                             if self._account_subscriptions:
                                 await self._send_subscription_request(ws, ["" for _ in self._account_subscriptions], self._account_subscriptions, grp_no="1") 
                             if self._stock_subscriptions:
@@ -249,7 +246,6 @@ class KiwoomWebSocketManager:
                                 types = [type for code, type in self._stock_subscriptions]
                                 await self._send_subscription_request(ws, items, types, grp_no="2") 
                             
-                            # 조건검색 재요청
                             if self.last_cond_idx:
                                 ws_logger.info(f"🔄 조건검색식 재등록 (Index: {self.last_cond_idx})")
                                 payload = { "trnm": "CNSRREQ", "seq": self.last_cond_idx, "search_type": "1", "stex_tp": "K" }
@@ -260,7 +256,6 @@ class KiwoomWebSocketManager:
                             err_msg = data.get('return_msg')
                             ws_logger.error(f"🔥 로그인 실패: {err_msg} [CODE={err_code}]")
                             
-                            # 토큰 만료 시 캐시 삭제 후 재시도 유도
                             if err_code != 0:
                                 ws_logger.warning("♻️ 토큰 만료 감지. 캐시를 삭제합니다.")
                                 clear_token_cache() 
@@ -275,7 +270,7 @@ class KiwoomWebSocketManager:
                         self._process_realtime_data(data.get('data', []))
                         
                 except json.JSONDecodeError:
-                    pass # JSON 파싱 에러는 무시
+                    pass 
                 except Exception as e:
                     ws_logger.error(f"데이터 처리 중 오류: {e}")
         
@@ -327,36 +322,40 @@ class KiwoomWebSocketManager:
                 if data_type in ('00', '04') and item_code == "":
                     item_key = "ACCOUNT_00" if data_type == "00" else "ACCOUNT_04"
                 
-                # 조건검색 포착 데이터
                 elif data_type == '02': 
                     item_key = f"CONDITION_{item_code}" 
                     raw_code = values.get('9001', '')
                     stock_code = raw_code.strip('AJ') 
-                    event_type = values.get('843') # I:진입, D:이탈
+                    event_type = values.get('843') 
                     
                     stock_name = self.master_stock_names.get(stock_code, stock_code)
                     real_cond_id = values.get('9007', item_code)
                     normalized_cond_id = str(int(real_cond_id)) if real_cond_id.isdigit() else real_cond_id
 
-                    # 메인 로직으로 이벤트 전달
                     event = { "condition_id": normalized_cond_id, "stock_code": stock_code, "type": event_type }
                     self.condition_queue.put(event)
                     
                     ws_logger.info(f"[조건포착] {stock_name}({stock_code}) - {event_type} (ID:{normalized_cond_id})")
                     self._update_dashboard_memory(stock_code, stock_name, event_type, normalized_cond_id)
                 
-                # 일반 주식 데이터
                 else:
                     item_key = f"{item_code}_{data_type}"
                 
                 self.realtime_data[item_key] = values
                 
-                # 체결 알림 로그 (수정됨: 종목명 포함)
+                # 🌟 [수정] 중요 성능 최적화: 계좌 관련 체결(내 주문)만 로그로 남기고
+                # 단순 시세(호가/체결틱) 데이터는 로그를 남기지 않거나 디버그로 처리
                 if data_type == '00': 
-                    code = values.get('9001', '')
-                    name = self.master_stock_names.get(code, code) # 마스터 파일에서 종목명 조회 (없으면 코드로 대체)
-                    msg = values.get('913', '')
-                    ws_logger.info(f"[체결알림] {name}({code}): {msg}")
+                    # item_code가 비어있으면(Account Data) 로그 출력, 아니면(Market Data) 무시
+                    if item_code == "":
+                        code = values.get('9001', '')
+                        name = self.master_stock_names.get(code, code)
+                        msg = values.get('913', '주문체결')
+                        ws_logger.info(f"[내주문체결] {name}({code}): {msg}")
+                    elif self.debug_mode:
+                         # 일반 시세는 디버그 모드일 때만
+                         code = values.get('9001', '')
+                         ws_logger.debug(f"[시세틱] {code} 현재가:{values.get('10')}")
 
     def _process_condition_snapshot(self, data):
         """ 조건검색 초기 스냅샷(이미 포착된 종목 리스트) 처리 """
@@ -368,7 +367,6 @@ class KiwoomWebSocketManager:
             
             stocks_info = []
             if raw_data:
-                # 데이터 형태가 배열일 수도, 문자열일 수도 있음 (API 특성)
                 if isinstance(raw_data, list):
                     for item in raw_data:
                         if isinstance(item, dict):
@@ -376,24 +374,26 @@ class KiwoomWebSocketManager:
                             name = item.get('stock_name') or item.get('name') or code
                             if code: stocks_info.append((code, name))
                         elif isinstance(item, str):
+                            # 🌟 [수정] 빈 문자열 예외 처리 추가
+                            if not item.strip(): continue
                             parts = item.split('^')
-                            if parts[0]: stocks_info.append((parts[0], parts[1] if len(parts) > 1 else parts[0]))
+                            if len(parts) > 0 and parts[0]: 
+                                stocks_info.append((parts[0], parts[1] if len(parts) > 1 else parts[0]))
                 elif isinstance(raw_data, str):
                     split_data = raw_data.split(';')
                     for item in split_data:
                         if not item.strip(): continue
                         parts = item.split('^')
-                        if parts[0]: stocks_info.append((parts[0], parts[1] if len(parts) > 1 else parts[0]))
+                        if len(parts) > 0 and parts[0]: 
+                            stocks_info.append((parts[0], parts[1] if len(parts) > 1 else parts[0]))
 
             for raw_code, raw_name in stocks_info:
                 code = raw_code.replace('A', '').replace('J', '').strip()
                 if not code: continue
                 final_name = self.master_stock_names.get(code, raw_name)
                 
-                # 대시보드 업데이트
                 self.dashboard_cache[code] = { "code": code, "name": final_name, "time": now_str, "cond_id": normalized_cond_id }
                 
-                # 이벤트 큐에 추가 (이미 포착된 종목도 감시 대상이 되도록)
                 event = { "condition_id": normalized_cond_id, "stock_code": code, "type": "I" }
                 self.condition_queue.put(event)
 
@@ -407,7 +407,6 @@ class KiwoomWebSocketManager:
             ws_logger.error(f"❌ 조건검색 스냅샷 처리 오류: {e}")
 
     def _update_dashboard_memory(self, code, name, event, cond_id):
-        """ 대시보드용 메모리 업데이트 (파일 저장은 비동기 스레드가 담당) """
         final_name = self.master_stock_names.get(code, name)
         if event == 'I':
             self.dashboard_cache[code] = { "code": code, "name": final_name, "time": datetime.now().strftime("%H:%M:%S"), "cond_id": cond_id }
@@ -417,7 +416,6 @@ class KiwoomWebSocketManager:
         self.is_dashboard_dirty = True
 
     def _save_dashboard_file_force(self):
-        """ 대시보드 파일(current_conditions.json) 강제 저장 """
         try:
             with self.file_lock:
                 file_path = "/data/current_conditions.json"
@@ -428,18 +426,15 @@ class KiwoomWebSocketManager:
         except Exception: pass
 
     async def _request_condition_list(self, ws):
-        """ 조건검색식 목록 요청 """
         await ws.send(json.dumps({"trnm": "CNSRLST"}))
         if self.debug_mode: ws_logger.debug(f"📤 [WS_SEND] 조건목록요청 (CNSRLST)")
 
     def _save_conditions_to_file(self, data):
-        """ 조건검색식 목록을 파일로 저장 """
         try:
             conditions = []
             data_list = data.get('data', [])
             if not data_list: return
             
-            # 데이터 파싱 (배열 또는 구분자 문자열)
             if isinstance(data_list[0], list):
                 for item in data_list:
                     if isinstance(item, list) and len(item) >= 2: conditions.append({"id": item[0], "name": item[1]})
@@ -464,6 +459,10 @@ class KiwoomWebSocketManager:
     def _start_loop_in_thread(self):
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
+        
+        # 🌟 [수정] 이벤트 루프 생성 완료 신호 전송
+        self.loop_ready_event.set()
+        
         ws_logger.info("WebSocket 이벤트 루프 시작")
         
         while self.is_running:
@@ -478,11 +477,18 @@ class KiwoomWebSocketManager:
 
     def start(self, stock_list=None, account_list=None):
         if self.is_running: return
+        
+        self.loop_ready_event.clear() # 이벤트 초기화
+        
         if stock_list: self._stock_subscriptions = stock_list
         if account_list: self._account_subscriptions = account_list
         self.is_running = True
         self.thread = threading.Thread(target=self._start_loop_in_thread, daemon=True)
         self.thread.start()
+        
+        # 🌟 [수정] 이벤트 루프가 준비될 때까지 최대 5초 대기 (안정성 확보)
+        if not self.loop_ready_event.wait(timeout=5.0):
+            ws_logger.error("❌ WebSocket 스레드 시작 시간 초과 (Loop Not Ready)")
 
     def stop(self):
         self.is_running = False
@@ -503,10 +509,13 @@ class KiwoomWebSocketManager:
         except queue.Empty: return None
 
     def add_subscription(self, stock_code, sub_type="0B"):
-        if self._loop: self._loop.call_soon_threadsafe(self._command_queue.put_nowait, {"action": "add", "stock_code": stock_code, "sub_type": sub_type})
+        # 🌟 [수정] 루프가 없는 경우 방어 코드
+        if self._loop: 
+            self._loop.call_soon_threadsafe(self._command_queue.put_nowait, {"action": "add", "stock_code": stock_code, "sub_type": sub_type})
 
     def remove_subscription(self, stock_code, sub_type="0B"):
-        if self._loop: self._loop.call_soon_threadsafe(self._command_queue.put_nowait, {"action": "remove", "stock_code": stock_code, "sub_type": sub_type})
+        if self._loop: 
+            self._loop.call_soon_threadsafe(self._command_queue.put_nowait, {"action": "remove", "stock_code": stock_code, "sub_type": sub_type})
 
     def request_condition_snapshot(self, cond_index):
         if self._loop:
