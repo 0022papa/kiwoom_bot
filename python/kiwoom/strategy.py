@@ -62,6 +62,9 @@ TELEGRAM_QUEUE = asyncio.Queue()
 TODAY_REALIZED_PROFIT = 0
 LAST_PROFIT_CHECK_TIME = datetime.min
 
+# 🌟 [신규] 동시 분석 제한용 세마포어 (너무 많은 동시 AI/API 요청 방지)
+ANALYSIS_SEMAPHORE = asyncio.Semaphore(5)  # 동시에 최대 5종목 분석
+
 # ---------------------------------------------------------
 # 3. 전략 및 봇 기본 설정
 # ---------------------------------------------------------
@@ -253,30 +256,18 @@ async def send_daily_report():
     except Exception as e:
         strategy_logger.error(f"리포트 생성 실패: {e}")
 
-# 🌟 [수정] log_trade에 ai_reason 인자 추가 및 메시지 반영
 async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=0, profit_amt=0, peak_rate=0, image_path=None, ai_reason=None):
     try:
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        price_str = f"{price:,}"
+        profit_str = f"{profit_rate:.2f}"
         
-        # 데이터를 딕셔너리로 구조화
-        trade_record = {
-            "timestamp": timestamp,
-            "action": action, # "BUY" or "SELL"
-            "code": stock_code,
-            "name": stk_nm,
-            "qty": qty,
-            "price": price,
-            "reason": reason,
-            "profit_rate": profit_rate,
-            "profit_amt": int(profit_amt),
-            "ai_reason": ai_reason
-        }
-
-        # JSON 문자열로 변환하여 저장 (ensure_ascii=False로 한글 깨짐 방지)
-        log_line = json.dumps(trade_record, ensure_ascii=False) + "\n"
+        # 🌟 [개선] JSONL 포맷으로 저장 (추후 대시보드 호환성 고려)
+        # 현재는 server.js가 텍스트 정규식을 쓰므로 기존 포맷 유지하되, AI 사유 등을 포함
+        log_msg = f"[{timestamp}] {action}: {stk_nm}({stock_code}), 수량: {qty}, 가격: {price_str}원, 사유: {reason}, 수익률: {profit_str}%, 손익금: {int(profit_amt)}\n"
 
         def _write_log():
-            with open(TRADES_FILE, 'a', encoding='utf-8') as f: f.write(log_line)
+            with open(TRADES_FILE, 'a', encoding='utf-8') as f: f.write(log_msg)
         await run_blocking(_write_log)
 
         print(f"📝 [매매기록] {action} {stk_nm} ({profit_str}%) - {reason}")
@@ -284,7 +275,6 @@ async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=
         emoji = "🔴 매수" if action == "BUY" else "🔵 매도"
         tg_msg = f"{emoji} <b>체결 알림</b>"
         
-        # 🌟 AI 분석 사유가 있으면 추가
         if action == "BUY" and ai_reason:
             tg_msg += f"\n🤖 <b>AI분석:</b> {ai_reason}"
             
@@ -304,10 +294,12 @@ async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=
             
     except Exception as e: strategy_logger.error(f"로그 작성 실패: {e}")
 
+    # 🌟 [개선] 로그 파일 보존 기간 확대 (1MB -> 10MB)
+    # 대시보드에서 오늘자 로그가 사라지는 것을 방지
     try:
         if await run_blocking(os.path.exists, TRADES_FILE):
              size = await run_blocking(os.path.getsize, TRADES_FILE)
-             if size > 1024 * 1024:
+             if size > 10 * 1024 * 1024: # 10MB
                 backup_name = f"{TRADES_FILE}.{datetime.now().strftime('%Y%m%d%H%M%S')}.bak"
                 await run_blocking(os.rename, TRADES_FILE, backup_name)
     except Exception: pass
@@ -788,14 +780,117 @@ async def _sync_initial_condition_list():
     cond_id = str(BOT_SETTINGS.get('CONDITION_ID') or "0")
     if ws_manager: ws_manager.request_condition_snapshot(cond_id)
 
+# 🌟 [신규] 개별 종목 처리 로직 분리 (비동기 병렬 실행용)
+async def process_single_stock_signal(stock_code, event_type, condition_id, condition_names):
+    global TRADING_STATE, PROCESSING_STOCKS, PENDING_ORDER_CONDITIONS, BUY_ATTEMPT_HISTORY
+    
+    order_amount = BOT_SETTINGS.get('ORDER_AMOUNT') or 100000
+    use_hoga_filter = BOT_SETTINGS.get('USE_HOGA_FILTER', True)
+    min_ratio = float(BOT_SETTINGS.get('MIN_BUY_SELL_RATIO') or 0.5)
+    
+    current_cond_name = condition_names.get(condition_id, "알수없음")
+    stk_name = ws_manager.master_stock_names.get(stock_code, stock_code)
+    
+    # 세마포어를 통해 동시 실행 개수 제한 (API/AI 과부하 방지)
+    async with ANALYSIS_SEMAPHORE:
+        try:
+            strategy_logger.info(f"🔔 [조건포착-분석시작] {stk_name} ({stock_code})")
+            
+            # 1. 가격 정보 조회
+            stock_info = None
+            current_price = 0
+            for attempt in range(3):
+                stock_info = await run_blocking(fn_ka10001_get_stock_info, stock_code)
+                if stock_info:
+                    current_price = abs(stock_info.get('현재가', 0))
+                    if current_price == 0: current_price = abs(stock_info.get('시가', 0))
+                    if current_price == 0: current_price = abs(stock_info.get('예상체결가', 0))
+                    if current_price == 0: current_price = abs(stock_info.get('기준가', 0))
+                    if current_price > 0: break
+                await asyncio.sleep(0.2)
+
+            if not stock_info: return
+            stk_nm = stock_info.get('종목명', stock_code)
+
+            if current_price <= 0:
+                strategy_logger.warning(f"❌ {stk_nm}({stock_code}) 가격 0원. 스킵.")
+                return
+
+            # 2. 호가 필터
+            if use_hoga_filter:
+                hoga_data = await run_blocking(fn_ka10004_get_hoga, stock_code)
+                if hoga_data:
+                    buy_total = hoga_data['buy_total']
+                    sell_total = hoga_data['sell_total']
+                    if sell_total > 0:
+                        ratio = buy_total / sell_total
+                        # 🌟 [개선] 호가 필터링 로그 구체화
+                        if ratio < min_ratio:
+                            strategy_logger.info(f"🛡️ [호가필터] {stk_nm} 진입 금지 (매수/매도 비율: {ratio:.2f} < {min_ratio})")
+                            return
+                    else: return
+                else: return
+
+            # 3. 차트 & AI 분석
+            is_good_chart, image_path, ai_reason = await analyze_chart_pattern(stock_code)
+            
+            if not is_good_chart:
+                RE_ENTRY_COOLDOWN[stock_code] = datetime.now() + timedelta(minutes=10)
+                return
+
+            # 4. 주문 수량 계산 및 주문
+            buy_qty = int((order_amount * 0.95) // current_price)
+            if buy_qty == 0:
+                if image_path:
+                    try: os.remove(image_path)
+                    except: pass
+                return
+
+            BUY_ATTEMPT_HISTORY[stock_code] = datetime.now()
+
+            strategy_logger.info(f"🚀 [주문전송] {stk_nm} / {buy_qty}주 / 시장가")
+            cond_info_str = f"{condition_id}:{current_cond_name}"
+            PENDING_ORDER_CONDITIONS[stock_code] = cond_info_str
+
+            ord_no = await run_blocking(fn_kt10000_buy_order, stock_code, buy_qty, price=0)
+
+            if ord_no:
+                await log_trade(stock_code, stk_nm, "BUY", buy_qty, current_price, f"조건검색({condition_id})", image_path=image_path, ai_reason=ai_reason)
+                TRADING_STATE[stock_code] = {
+                    "stk_nm": stk_nm, "buy_price": current_price, "buy_qty": buy_qty,
+                    "trailing_active": False, "peak_profit_rate": 0.0,
+                    "status": "매수주문", "current_profit_rate": 0.0,
+                    "order_time": datetime.now(),
+                    "condition_from": cond_info_str,
+                    "ord_no": ord_no
+                }
+                ws_manager.add_subscription(stock_code, "0B")
+                print(f"✅ [주문성공] 주문번호: {ord_no}")
+            else:
+                strategy_logger.error(f"❌ [주문실패] {stk_nm}: API 응답 없음")
+                if image_path:
+                    try: os.remove(image_path)
+                    except: pass
+
+            await save_status_to_file(force=True)
+            
+        except Exception as e:
+            strategy_logger.error(f"종목 처리 중 오류 ({stock_code}): {e}")
+            if 'image_path' in locals() and image_path:
+                try: os.remove(image_path)
+                except: pass
+        finally:
+            # 처리 완료 후 Set에서 제거하여 다음 신호 허용
+            if stock_code in PROCESSING_STOCKS: 
+                PROCESSING_STOCKS.remove(stock_code)
+
+
 async def check_for_new_stocks():
     global TRADING_STATE, PROCESSING_STOCKS, PENDING_ORDER_CONDITIONS, BUY_ATTEMPT_HISTORY
 
     condition_id = str(BOT_SETTINGS.get('CONDITION_ID') or "0")
-    order_amount = BOT_SETTINGS.get('ORDER_AMOUNT') or 100000
-    use_hoga_filter = BOT_SETTINGS.get('USE_HOGA_FILTER', True)
-    min_ratio = float(BOT_SETTINGS.get('MIN_BUY_SELL_RATIO') or 0.5)
-
+    
+    # 조건식 이름 로딩
     condition_names = {}
     try:
         if await run_blocking(os.path.exists, CONDITIONS_NAME_FILE):
@@ -831,93 +926,16 @@ async def check_for_new_stocks():
             else:
                 del BUY_ATTEMPT_HISTORY[stock_code]
 
-        current_cond_name = condition_names.get(condition_id, "알수없음")
-        stk_name = ws_manager.master_stock_names.get(stock_code, stock_code)
-        strategy_logger.info(f"🔔 [조건포착] {stk_name} ({stock_code}) 확인 중...")
-
+        # 처리 중 목록에 추가
         PROCESSING_STOCKS.add(stock_code)
-        await asyncio.sleep(0.1)
-
-        try:
-            stock_info = None
-            current_price = 0
-            for attempt in range(3):
-                stock_info = await run_blocking(fn_ka10001_get_stock_info, stock_code)
-                if stock_info:
-                    current_price = abs(stock_info.get('현재가', 0))
-                    if current_price == 0: current_price = abs(stock_info.get('시가', 0))
-                    if current_price == 0: current_price = abs(stock_info.get('예상체결가', 0))
-                    if current_price == 0: current_price = abs(stock_info.get('기준가', 0))
-                    if current_price > 0: break
-                await asyncio.sleep(0.2)
-
-            if not stock_info: continue
-            stk_nm = stock_info.get('종목명', stock_code)
-
-            if current_price <= 0:
-                strategy_logger.warning(f"❌ {stk_nm}({stock_code}) 가격 데이터 수신 실패 (0원). 매수 포기.")
-                continue
-
-            if use_hoga_filter:
-                hoga_data = await run_blocking(fn_ka10004_get_hoga, stock_code)
-                if hoga_data:
-                    buy_total = hoga_data['buy_total']
-                    sell_total = hoga_data['sell_total']
-                    if sell_total > 0:
-                        ratio = buy_total / sell_total
-                        if ratio < min_ratio:
-                            strategy_logger.info(f"🛡️ [호가필터] {stk_nm} 진입 금지 (비율 {ratio:.2f})")
-                            continue
-                    else: continue
-                else: continue
-
-            # 🌟 [수정] 차트 분석 (반환값 3개로 언패킹)
-            is_good_chart, image_path, ai_reason = await analyze_chart_pattern(stock_code)
-            
-            if not is_good_chart:
-                RE_ENTRY_COOLDOWN[stock_code] = datetime.now() + timedelta(minutes=10)
-                continue
-
-            buy_qty = int((order_amount * 0.95) // current_price)
-            if buy_qty == 0:
-                if image_path:
-                    try: os.remove(image_path)
-                    except: pass
-                continue
-
-            BUY_ATTEMPT_HISTORY[stock_code] = datetime.now()
-
-            strategy_logger.info(f"🚀 [주문전송] {stk_nm} / {buy_qty}주 / 시장가")
-            cond_info_str = f"{condition_id}:{current_cond_name}"
-            PENDING_ORDER_CONDITIONS[stock_code] = cond_info_str
-
-            ord_no = await run_blocking(fn_kt10000_buy_order, stock_code, buy_qty, price=0)
-
-            if ord_no:
-                # 🌟 [수정] log_trade에 ai_reason 전달
-                await log_trade(stock_code, stk_nm, "BUY", buy_qty, current_price, f"조건검색({condition_id})", image_path=image_path, ai_reason=ai_reason)
-                TRADING_STATE[stock_code] = {
-                    "stk_nm": stk_nm, "buy_price": current_price, "buy_qty": buy_qty,
-                    "trailing_active": False, "peak_profit_rate": 0.0,
-                    "status": "매수주문", "current_profit_rate": 0.0,
-                    "order_time": datetime.now(),
-                    "condition_from": cond_info_str,
-                    "ord_no": ord_no
-                }
-                ws_manager.add_subscription(stock_code, "0B")
-                print(f"✅ [주문성공] 주문번호: {ord_no}")
-            else:
-                strategy_logger.error(f"❌ [주문실패] {stk_nm}: API 응답 없음")
-                if image_path:
-                    try: os.remove(image_path)
-                    except: pass
-
-            await save_status_to_file(force=True)
-            
-        finally:
-            if stock_code in PROCESSING_STOCKS: 
-                PROCESSING_STOCKS.remove(stock_code)
-            await asyncio.sleep(1.0)
+        
+        # 🌟 [개선] 비동기 태스크로 실행 (병렬 처리)
+        # 이제 await process_single_stock_signal(...)을 하지 않고 태스크만 생성하여 넘깁니다.
+        # 따라서 다음 이벤트(다른 종목)를 즉시 꺼내올 수 있습니다.
+        asyncio.create_task(process_single_stock_signal(stock_code, "I", condition_id, condition_names))
+        
+        # CPU 과부하 방지를 위한 아주 짧은 양보
+        await asyncio.sleep(0.01)
 
 async def try_market_close_liquidation():
     global TRADING_STATE
