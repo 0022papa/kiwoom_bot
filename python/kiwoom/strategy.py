@@ -1345,19 +1345,25 @@ async def main():
                 await save_status_to_file(force=True)
                 last_force_save = datetime.now()
 
+            # 🌟 [수정] 리포트 발송 로직을 이곳으로 이동 (상태와 무관하게 실행) 🌟
+            try:
+                # 15시 40분 이후라면 리포트 체크
+                if (datetime.now().hour == 15 and datetime.now().minute >= 40) or (datetime.now().hour > 15):
+                    current_date_str = datetime.now().strftime('%Y-%m-%d')
+                    if last_report_date != current_date_str:
+                        # 주말/공휴일 제외 로직이 필요하다면 여기에 추가 가능 (현재는 매일 체크)
+                        await send_daily_report()
+                        last_report_date = current_date_str
+            except Exception as e:
+                strategy_logger.error(f"리포트 체크 중 오류: {e}")
+
             if await check_auto_condition_change(): break
             if bot_status == "RESTARTING": break
 
             elif bot_status == "RUNNING":
                 if not is_market_open():
                     now_time = datetime.now().time()
-                    current_date_str = datetime.now().strftime('%Y-%m-%d')
                     
-                    if (datetime.now().hour == 15 and datetime.now().minute >= 40) or (datetime.now().hour > 15):
-                        if last_report_date != current_date_str:
-                            await send_daily_report()
-                            last_report_date = current_date_str
-
                     if (datetime.now() - last_alive_log).total_seconds() > 1800:
                         msg = f"💤 [장마감] 대기 모드\n보유: {len(TRADING_STATE)}종목"
                         strategy_logger.info(msg.replace("\n", " / "))
