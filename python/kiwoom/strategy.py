@@ -66,7 +66,7 @@ LAST_PROFIT_CHECK_TIME = datetime.min
 # 3. 전략 및 봇 기본 설정
 # ---------------------------------------------------------
 STRATEGY_PRESETS = {
-    "0": { "DESC": "오전급등(공격형)", "STOP_LOSS_RATE": -2.0, "TRAILING_START_RATE": 1.0, "TRAILING_STOP_RATE": -0.6, "RE_ENTRY_COOLDOWN_MIN": 60, "MIN_BUY_SELL_RATIO": 0.2 },
+    "0": { "DESC": "오전급등(공격형)", "STOP_LOSS_RATE": -2.0, "TRAILING_START_RATE": 1.0, "TRAILING_STOP_RATE": -0.6, "RE_ENTRY_COOLDOWN_MIN": 60, "MIN_BUY_SELL_RATIO": 0.5 },
     "1": { "DESC": "눌림목(안정형)", "STOP_LOSS_RATE": -2.0, "TRAILING_START_RATE": 1.0, "TRAILING_STOP_RATE": -0.6, "RE_ENTRY_COOLDOWN_MIN": 30, "MIN_BUY_SELL_RATIO": 0.8 },
     "2": { "DESC": "종가베팅(오버나잇)", "STOP_LOSS_RATE": -2.0, "TRAILING_START_RATE": 1.0, "TRAILING_STOP_RATE": -0.6, "RE_ENTRY_COOLDOWN_MIN": 0, "MIN_BUY_SELL_RATIO": 0.5 }
 }

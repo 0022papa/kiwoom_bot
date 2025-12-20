@@ -2,6 +2,8 @@ import os
 import logging
 import pandas as pd
 import mplfinance as mpf
+import json
+import re
 from datetime import datetime
 from dotenv import load_dotenv
 from PIL import Image
@@ -64,9 +66,10 @@ def create_chart_image(stock_code, stock_name, candle_data):
             
         file_path = f"{save_dir}/{stock_code}_chart.png"
         
+        # 차트 저장 설정 (이평선 포함)
         mpf.plot(df, type='candle', mav=(5, 20), volume=True, style=s, 
                  title=f"{stock_name} ({stock_code})", 
-                 savefig=file_path)
+                 savefig=dict(fname=file_path, dpi=100, bbox_inches='tight'))
         
         return file_path
     except Exception as e:
@@ -76,6 +79,7 @@ def create_chart_image(stock_code, stock_name, candle_data):
 def ask_ai_to_buy(image_path):
     """
     Gemini Vision AI에게 차트를 보여주고 매수 여부를 물어봅니다.
+    (JSON 모드 및 한글 프롬프트 적용)
     """
     try:
         if not os.path.exists(image_path):
@@ -84,45 +88,60 @@ def ask_ai_to_buy(image_path):
 
         image = Image.open(image_path)
         
+        # 🌟 [수정] 프롬프트를 한글로 변경하여 출력 언어를 명확히 지정
         prompt = """
-        당신은 한국 주식 시장의 전문 스캘퍼(Scalper)입니다.
-        제공된 3분봉 차트를 보고 지금이 매수하기 좋은 타이밍인지 분석해주세요.
+        당신은 한국 주식 시장의 초단타 매매(Scalping) 전문가입니다.
+        제공된 3분봉 차트 이미지를 분석하여 지금 매수할지 결정해주세요.
         
-        차트 정보:
-        - 빨간색 캔들: 양봉 (종가 > 시가)
-        - 파란색 캔들: 음봉 (종가 < 시가)
-        - 선: 이동평균선 (5일, 20일)
-        
-        매수(BUY) 핵심 기준:
-        1. 강력한 상승 추세 또는 지지선에서의 명확한 반등이 있는가?
-        2. 최근 양봉에서 거래량이 증가하고 있는가?
-        3. 현재가가 20일 이동평균선 위에 있거나 지지를 받고 있는가?
-        4. 마지막 캔들에 긴 윗꼬리(매도 압력)가 없는가?
+        [매수 판단 핵심 기준]
+        1. 상승 추세가 뚜렷하거나 주요 지지선에서 반등이 확인되는가?
+        2. 최근 양봉(빨간색)에서 거래량이 증가하고 있는가?
+        3. 주가가 20일 이동평균선 위에 있거나 지지를 받고 있는가?
+        4. 윗꼬리가 긴 캔들(매도 압력)이 없는가?
 
-        질문: 지금 당장 매수해야 할까요?
-        답변 형식: 반드시 "YES" 또는 "NO"로 시작하고, 그 뒤에 판단 이유를 '한국어'로 한 문장으로 짧게 요약해서 적어주세요.
-        예시: YES, 20일 이평선 지지를 받고 거래량이 실린 양봉이 출현하여 상승세가 예상됩니다.
+        [출력 형식]
+        반드시 아래의 JSON 형식으로만 응답하세요. (Markdown 코드 블록 없이 순수 JSON만 출력)
+        {
+            "decision": "YES" 또는 "NO",
+            "reason": "판단의 근거를 '한글'로 한 문장으로 명확하게 요약해주세요. (예: 20일 이평선 지지 및 거래량 실린 양봉 출현으로 상승 예상)"
+        }
         """
         
+        # 모델 설정 (JSON 응답 강제)
+        generate_config = types.GenerateContentConfig(
+            response_mime_type="application/json"
+        )
+
         response = client.models.generate_content(
             model='gemini-3-flash-preview',
-            contents=[prompt, image]
+            contents=[prompt, image],
+            config=generate_config
         )
         
         result_text = response.text.strip()
+        ai_logger.debug(f"🤖 AI Raw Response: {result_text}")
         
-        # 🌟 [수정] 중복 출력 방지: INFO -> DEBUG 레벨로 변경
-        # Strategy.py에서 최종 결과를 출력하므로 여기서는 숨김 처리합니다.
-        ai_logger.debug(f"🤖 AI 분석 결과(Raw): {result_text}")
-        
-        if result_text.upper().startswith("YES"):
-            return True, result_text
-        else:
-            return False, result_text
+        # JSON 파싱 및 예외 처리
+        try:
+            # Markdown code block 제거 (혹시 포함될 경우를 대비)
+            cleaned_text = re.sub(r'```json\s*|\s*```', '', result_text)
+            result_json = json.loads(cleaned_text)
+            
+            decision = result_json.get("decision", "NO").upper()
+            reason = result_json.get("reason", "분석 실패")
+            
+            if decision == "YES":
+                return True, reason
+            else:
+                return False, reason
+                
+        except json.JSONDecodeError:
+            ai_logger.error(f"AI 응답 JSON 파싱 실패: {result_text}")
+            return False, "AI 응답 파싱 오류"
             
     except Exception as e:
         ai_logger.error(f"AI 분석 중 오류: {e}")
-        return True, f"AI Error: {str(e)}"
+        return False, f"AI Error: {str(e)}"
 
 if __name__ == "__main__":
     print("이 파일은 모듈로 사용됩니다.")
