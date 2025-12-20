@@ -4,6 +4,7 @@ import pandas as pd
 import mplfinance as mpf
 import json
 import re
+import random
 from datetime import datetime
 from dotenv import load_dotenv
 from PIL import Image
@@ -12,9 +13,6 @@ from google import genai
 from google.genai import types
 
 load_dotenv()
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-
-client = genai.Client(api_key=GOOGLE_API_KEY)
 
 ai_logger = logging.getLogger("AI_Analyst")
 ai_logger.setLevel(logging.INFO)
@@ -24,6 +22,34 @@ if not ai_logger.handlers:
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     handler.setFormatter(formatter)
     ai_logger.addHandler(handler)
+
+# ---------------------------------------------------------
+# 🔑 다중 API 키 로드 및 클라이언트 풀 생성 로직
+# ---------------------------------------------------------
+api_key_list = []
+
+# 1. 기존 단일 키 로드
+if os.getenv("GOOGLE_API_KEY"):
+    api_key_list.append(os.getenv("GOOGLE_API_KEY"))
+
+# 2. 다중 키 로드 (GOOGLE_API_KEYS=키1,키2,키3...)
+if os.getenv("GOOGLE_API_KEYS"):
+    keys = os.getenv("GOOGLE_API_KEYS").split(',')
+    for k in keys:
+        clean_key = k.strip()
+        if clean_key:
+            api_key_list.append(clean_key)
+
+# 중복 제거
+api_key_list = list(set(api_key_list))
+
+if not api_key_list:
+    ai_logger.error("❌ Google API 키가 설정되지 않았습니다. .env 파일을 확인해주세요.")
+    CLIENT_POOL = []
+else:
+    ai_logger.info(f"🔑 로드된 API 키 개수: {len(api_key_list)}개 (부하 분산 적용됨)")
+    # 각 키별로 클라이언트 미리 생성 (연결 풀)
+    CLIENT_POOL = [genai.Client(api_key=k) for k in api_key_list]
 
 
 def create_chart_image(stock_code, stock_name, candle_data):
@@ -36,7 +62,6 @@ def create_chart_image(stock_code, stock_name, candle_data):
         
         df = pd.DataFrame(candle_data)
         
-        # 키움 REST API 응답 필드명 매핑
         df = df.rename(columns={
             'cntr_tm': 'Date',
             'cur_prc': 'Close',
@@ -66,7 +91,6 @@ def create_chart_image(stock_code, stock_name, candle_data):
             
         file_path = f"{save_dir}/{stock_code}_chart.png"
         
-        # 차트 저장 설정 (이평선 포함)
         mpf.plot(df, type='candle', mav=(5, 20), volume=True, style=s, 
                  title=f"{stock_name} ({stock_code})", 
                  savefig=dict(fname=file_path, dpi=100, bbox_inches='tight'))
@@ -79,16 +103,18 @@ def create_chart_image(stock_code, stock_name, candle_data):
 def ask_ai_to_buy(image_path):
     """
     Gemini Vision AI에게 차트를 보여주고 매수 여부를 물어봅니다.
-    (JSON 모드 및 한글 프롬프트 적용)
+    (API 키 로테이션 적용)
     """
     try:
+        if not CLIENT_POOL:
+            return False, "API Key Error"
+
         if not os.path.exists(image_path):
             ai_logger.error("이미지 파일이 존재하지 않습니다.")
             return False, "Image Error"
 
         image = Image.open(image_path)
         
-        # 🌟 [수정] 프롬프트를 한글로 변경하여 출력 언어를 명확히 지정
         prompt = """
         당신은 한국 주식 시장의 초단타 매매(Scalping) 전문가입니다.
         제공된 3분봉 차트 이미지를 분석하여 지금 매수할지 결정해주세요.
@@ -107,13 +133,15 @@ def ask_ai_to_buy(image_path):
         }
         """
         
-        # 모델 설정 (JSON 응답 강제)
         generate_config = types.GenerateContentConfig(
             response_mime_type="application/json"
         )
 
-        response = client.models.generate_content(
-            model='gemini-3-flash-preview',
+        # 🌟 [핵심] 클라이언트 풀에서 랜덤하게 하나 선택하여 요청
+        selected_client = random.choice(CLIENT_POOL)
+
+        response = selected_client.models.generate_content(
+            model='gemini-3-flash-preview', 
             contents=[prompt, image],
             config=generate_config
         )
@@ -121,9 +149,7 @@ def ask_ai_to_buy(image_path):
         result_text = response.text.strip()
         ai_logger.debug(f"🤖 AI Raw Response: {result_text}")
         
-        # JSON 파싱 및 예외 처리
         try:
-            # Markdown code block 제거 (혹시 포함될 경우를 대비)
             cleaned_text = re.sub(r'```json\s*|\s*```', '', result_text)
             result_json = json.loads(cleaned_text)
             
