@@ -257,12 +257,26 @@ async def send_daily_report():
 async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=0, profit_amt=0, peak_rate=0, image_path=None, ai_reason=None):
     try:
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        price_str = f"{price:,}"
-        profit_str = f"{profit_rate:.2f}"
-        log_msg = f"[{timestamp}] {action}: {stk_nm}({stock_code}), 수량: {qty}, 가격: {price_str}원, 사유: {reason}, 수익률: {profit_str}%, 손익금: {int(profit_amt)}\n"
+        
+        # 데이터를 딕셔너리로 구조화
+        trade_record = {
+            "timestamp": timestamp,
+            "action": action, # "BUY" or "SELL"
+            "code": stock_code,
+            "name": stk_nm,
+            "qty": qty,
+            "price": price,
+            "reason": reason,
+            "profit_rate": profit_rate,
+            "profit_amt": int(profit_amt),
+            "ai_reason": ai_reason
+        }
+
+        # JSON 문자열로 변환하여 저장 (ensure_ascii=False로 한글 깨짐 방지)
+        log_line = json.dumps(trade_record, ensure_ascii=False) + "\n"
 
         def _write_log():
-            with open(TRADES_FILE, 'a', encoding='utf-8') as f: f.write(log_msg)
+            with open(TRADES_FILE, 'a', encoding='utf-8') as f: f.write(log_line)
         await run_blocking(_write_log)
 
         print(f"📝 [매매기록] {action} {stk_nm} ({profit_str}%) - {reason}")

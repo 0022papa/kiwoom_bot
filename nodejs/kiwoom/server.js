@@ -157,21 +157,22 @@ app.get('/api/conditions', checkAuth, async (req, res) => {
 app.get('/api/trades', checkAuth, async (req, res) => {
     try {
         const logData = await fs.readFile(TRADES_FILE, 'utf-8');
-        const lines = logData.split('\n').filter(line => line.trim() !== '');
-        
-        const recentLines = lines.slice(-100); 
+        // 줄바꿈으로 나누고, 비어있지 않은 줄만 JSON 파싱
+        const trades = logData
+            .split('\n')
+            .filter(line => line.trim() !== '')
+            .map(line => {
+                try { return JSON.parse(line); } 
+                catch (e) { return null; }
+            })
+            .filter(item => item !== null)
+            .reverse() // 최신순 정렬
+            .slice(0, 100); // 최근 100건만
 
-        const trades = recentLines.map(line => {
-            try {
-                // 🌟 정규식 수정: 끝부분($) 제거 및 유연하게 처리
-                const parts = line.match(/^\[(.*?)\] (.*?): (.*?)\((.*?)\), 수량: (.*?), 가격: (.*?)원, 사유: (.*?), 수익률: (.*?)(?:%|%,.*)$/);
-                if (parts) return { time: parts[1], action: parts[2], name: parts[3], code: parts[4], qty: parts[5], price: parts[6], reason: parts[7], profit: parts[8] };
-                return null;
-            } catch (e) { return null; }
-        }).filter(item => item !== null).reverse(); 
-        
         res.json({ trades: trades });
-    } catch (error) { res.json({ trades: [] }); }
+    } catch (error) { 
+        res.json({ trades: [] }); 
+    }
 });
 
 app.get('/api/current_conditions', checkAuth, async (req, res) => {
