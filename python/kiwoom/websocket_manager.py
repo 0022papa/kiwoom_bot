@@ -332,7 +332,21 @@ class KiwoomWebSocketManager:
                     real_cond_id = values.get('9007', item_code)
                     normalized_cond_id = str(int(real_cond_id)) if real_cond_id.isdigit() else real_cond_id
 
-                    event = { "condition_id": normalized_cond_id, "stock_code": stock_code, "type": event_type }
+                    # 🌟 [수정] 포착 당시의 현재가 정보 추출 (API 호출 절약용)
+                    current_price = 0
+                    try:
+                        raw_price = values.get('10') # FID 10: 현재가
+                        if raw_price:
+                            current_price = abs(int(raw_price.replace('+', '').replace('-', '')))
+                    except: pass
+
+                    # 이벤트에 price 정보 추가
+                    event = { 
+                        "condition_id": normalized_cond_id, 
+                        "stock_code": stock_code, 
+                        "type": event_type,
+                        "price": current_price  # <--- 추가됨
+                    }
                     self.condition_queue.put(event)
                     
                     ws_logger.info(f"[조건포착] {stock_name}({stock_code}) - {event_type} (ID:{normalized_cond_id})")
@@ -343,17 +357,13 @@ class KiwoomWebSocketManager:
                 
                 self.realtime_data[item_key] = values
                 
-                # 🌟 [수정] 중요 성능 최적화: 계좌 관련 체결(내 주문)만 로그로 남기고
-                # 단순 시세(호가/체결틱) 데이터는 로그를 남기지 않거나 디버그로 처리
                 if data_type == '00': 
-                    # item_code가 비어있으면(Account Data) 로그 출력, 아니면(Market Data) 무시
                     if item_code == "":
                         code = values.get('9001', '')
                         name = self.master_stock_names.get(code, code)
                         msg = values.get('913', '주문체결')
                         ws_logger.info(f"[내주문체결] {name}({code}): {msg}")
                     elif self.debug_mode:
-                         # 일반 시세는 디버그 모드일 때만
                          code = values.get('9001', '')
                          ws_logger.debug(f"[시세틱] {code} 현재가:{values.get('10')}")
 

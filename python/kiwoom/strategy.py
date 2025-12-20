@@ -7,8 +7,9 @@ import asyncio
 import traceback
 import signal
 import hashlib
-import queue  # 스레드 간 통신용
+import queue
 import exchange_calendars as xcals
+from collections import deque
 from datetime import datetime, timedelta
 from logging.handlers import TimedRotatingFileHandler
 from functools import partial
@@ -31,6 +32,33 @@ from api_v1 import (
 from config import MOCK_TRADE, KIWOOM_ACCOUNT_NO, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 from websocket_manager import KiwoomWebSocketManager
 from backtesting import run_simulation_for_list
+
+# ---------------------------------------------------------
+# 🌟 [신규] 비동기 속도 제한 클래스 (Proactive Rate Limiter)
+# ---------------------------------------------------------
+class AsyncRateLimiter:
+    def __init__(self, max_calls, period=1.0):
+        self.max_calls = max_calls
+        self.period = period
+        self.timestamps = deque()
+
+    async def wait(self):
+        while True:
+            now = time.time()
+            # 기간 지난 기록 제거
+            while self.timestamps and now - self.timestamps[0] > self.period:
+                self.timestamps.popleft()
+            
+            if len(self.timestamps) < self.max_calls:
+                self.timestamps.append(now)
+                return
+            
+            # 제한에 걸리면 잠시 대기
+            await asyncio.sleep(0.1)
+
+# 🌟 전역 제한 설정: 초당 4회 호출로 제한 (키움 권장: 초당 5회 미만)
+GLOBAL_API_LIMITER = AsyncRateLimiter(max_calls=4, period=1.0)
+ANALYSIS_SEMAPHORE = asyncio.Semaphore(5) # 동시 분석 종목 수
 
 # ---------------------------------------------------------
 # 1. 시스템 환경 설정
@@ -781,7 +809,7 @@ async def _sync_initial_condition_list():
     if ws_manager: ws_manager.request_condition_snapshot(cond_id)
 
 # 🌟 [신규] 개별 종목 처리 로직 분리 (비동기 병렬 실행용)
-async def process_single_stock_signal(stock_code, event_type, condition_id, condition_names):
+async def process_single_stock_signal(stock_code, event_type, condition_id, condition_names, initial_price=None):
     global TRADING_STATE, PROCESSING_STOCKS, PENDING_ORDER_CONDITIONS, BUY_ATTEMPT_HISTORY
     
     order_amount = BOT_SETTINGS.get('ORDER_AMOUNT') or 100000
@@ -791,54 +819,66 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
     current_cond_name = condition_names.get(condition_id, "알수없음")
     stk_name = ws_manager.master_stock_names.get(stock_code, stock_code)
     
-    # 세마포어를 통해 동시 실행 개수 제한 (API/AI 과부하 방지)
     async with ANALYSIS_SEMAPHORE:
         try:
-            strategy_logger.info(f"🔔 [조건포착-분석시작] {stk_name} ({stock_code})")
+            strategy_logger.info(f"🔔 [조건포착] {stk_name} ({stock_code}) 분석 시작")
             
-            # 1. 가격 정보 조회
+            # 1. 가격 정보 조회 (API 호출 절약 로직)
             stock_info = None
             current_price = 0
-            for attempt in range(3):
-                stock_info = await run_blocking(fn_ka10001_get_stock_info, stock_code)
-                if stock_info:
-                    current_price = abs(stock_info.get('현재가', 0))
-                    if current_price == 0: current_price = abs(stock_info.get('시가', 0))
-                    if current_price == 0: current_price = abs(stock_info.get('예상체결가', 0))
-                    if current_price == 0: current_price = abs(stock_info.get('기준가', 0))
-                    if current_price > 0: break
-                await asyncio.sleep(0.2)
-
-            if not stock_info: return
-            stk_nm = stock_info.get('종목명', stock_code)
+            
+            # 🌟 WebSocket에서 받은 가격이 있으면 API 호출 생략 (Breakthrough!)
+            if initial_price and initial_price > 0:
+                current_price = initial_price
+                # 종목명만 빠르게 확인 (캐시 사용 권장되지만, 여기선 간단히)
+                if stk_name == stock_code: # 종목명이 코드와 같으면(모르면) 조회
+                    await GLOBAL_API_LIMITER.wait()
+                    stock_info = await run_blocking(fn_ka10001_get_stock_info, stock_code)
+                    if stock_info: stk_nm = stock_info.get('종목명', stock_code)
+                else:
+                    stk_nm = stk_name
+                debug_log(f"⚡ [Speed] {stk_nm}: 웹소켓 가격({current_price}) 사용 -> API 생략")
+            else:
+                # 가격 정보가 없으면 API 호출 (Rate Limit 적용)
+                for attempt in range(3):
+                    await GLOBAL_API_LIMITER.wait() # 🚦 신호 대기
+                    stock_info = await run_blocking(fn_ka10001_get_stock_info, stock_code)
+                    if stock_info:
+                        current_price = abs(stock_info.get('현재가', 0))
+                        if current_price == 0: current_price = abs(stock_info.get('시가', 0))
+                        if current_price > 0: break
+                    await asyncio.sleep(0.2)
+                stk_nm = stock_info.get('종목명', stock_code) if stock_info else stock_code
 
             if current_price <= 0:
-                strategy_logger.warning(f"❌ {stk_nm}({stock_code}) 가격 0원. 스킵.")
+                strategy_logger.warning(f"❌ {stk_nm}({stock_code}) 가격 정보 없음. 스킵.")
                 return
 
-            # 2. 호가 필터
+            # 2. 호가 필터 (Rate Limit 적용)
             if use_hoga_filter:
+                await GLOBAL_API_LIMITER.wait() # 🚦 신호 대기
                 hoga_data = await run_blocking(fn_ka10004_get_hoga, stock_code)
                 if hoga_data:
                     buy_total = hoga_data['buy_total']
                     sell_total = hoga_data['sell_total']
                     if sell_total > 0:
                         ratio = buy_total / sell_total
-                        # 🌟 [개선] 호가 필터링 로그 구체화
                         if ratio < min_ratio:
-                            strategy_logger.info(f"🛡️ [호가필터] {stk_nm} 진입 금지 (매수/매도 비율: {ratio:.2f} < {min_ratio})")
+                            strategy_logger.info(f"🛡️ [호가필터] {stk_nm} 진입 금지 (비율: {ratio:.2f})")
                             return
                     else: return
                 else: return
 
-            # 3. 차트 & AI 분석
+            # 3. 차트 & AI 분석 (Rate Limit 적용 - 차트 조회)
+            # 차트 조회는 무겁기 때문에 반드시 제한 필요
+            await GLOBAL_API_LIMITER.wait() # 🚦 신호 대기
             is_good_chart, image_path, ai_reason = await analyze_chart_pattern(stock_code)
             
             if not is_good_chart:
                 RE_ENTRY_COOLDOWN[stock_code] = datetime.now() + timedelta(minutes=10)
                 return
 
-            # 4. 주문 수량 계산 및 주문
+            # 4. 주문 실행 (주문은 Rate Limit 예외 - 즉시 실행)
             buy_qty = int((order_amount * 0.95) // current_price)
             if buy_qty == 0:
                 if image_path:
@@ -880,7 +920,6 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                 try: os.remove(image_path)
                 except: pass
         finally:
-            # 처리 완료 후 Set에서 제거하여 다음 신호 허용
             if stock_code in PROCESSING_STOCKS: 
                 PROCESSING_STOCKS.remove(stock_code)
 
@@ -890,7 +929,6 @@ async def check_for_new_stocks():
 
     condition_id = str(BOT_SETTINGS.get('CONDITION_ID') or "0")
     
-    # 조건식 이름 로딩
     condition_names = {}
     try:
         if await run_blocking(os.path.exists, CONDITIONS_NAME_FILE):
@@ -907,34 +945,27 @@ async def check_for_new_stocks():
 
         stock_code = event.get('stock_code', '').strip('AJ')
         if event.get('type') != 'I': continue
-
-        debug_log(f"조건포착 이벤트 수신: {stock_code}")
+        
+        # 🌟 WebSocket에서 추출한 가격 정보 가져오기
+        initial_price = event.get('price')
 
         if stock_code in TRADING_STATE: continue
         if stock_code in PROCESSING_STOCKS: continue
         if stock_code in RE_ENTRY_COOLDOWN:
             if datetime.now() < RE_ENTRY_COOLDOWN[stock_code]:
-                debug_log(f"{stock_code}는 쿨타임 중이라 패스")
                 continue
             else: del RE_ENTRY_COOLDOWN[stock_code]
 
         if stock_code in BUY_ATTEMPT_HISTORY:
             elapsed = (datetime.now() - BUY_ATTEMPT_HISTORY[stock_code]).total_seconds()
-            if elapsed < 60:
-                debug_log(f"🛡️ {stock_code} 중복 매수 방지 (최근 시도 {elapsed:.1f}초 전)")
-                continue
-            else:
-                del BUY_ATTEMPT_HISTORY[stock_code]
+            if elapsed < 60: continue
+            else: del BUY_ATTEMPT_HISTORY[stock_code]
 
-        # 처리 중 목록에 추가
         PROCESSING_STOCKS.add(stock_code)
         
-        # 🌟 [개선] 비동기 태스크로 실행 (병렬 처리)
-        # 이제 await process_single_stock_signal(...)을 하지 않고 태스크만 생성하여 넘깁니다.
-        # 따라서 다음 이벤트(다른 종목)를 즉시 꺼내올 수 있습니다.
-        asyncio.create_task(process_single_stock_signal(stock_code, "I", condition_id, condition_names))
+        # 🌟 가격 정보(initial_price)를 함께 전달
+        asyncio.create_task(process_single_stock_signal(stock_code, "I", condition_id, condition_names, initial_price))
         
-        # CPU 과부하 방지를 위한 아주 짧은 양보
         await asyncio.sleep(0.01)
 
 async def try_market_close_liquidation():
