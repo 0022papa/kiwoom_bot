@@ -90,6 +90,9 @@ TELEGRAM_QUEUE = asyncio.Queue()
 TODAY_REALIZED_PROFIT = 0
 LAST_PROFIT_CHECK_TIME = datetime.min
 
+# 🌟 [최적화] 조건식 이름 캐싱용 전역 변수 (파일 I/O 병목 제거)
+CACHED_CONDITION_NAMES = {}
+
 # 🌟 [신규] 동시 분석 제한용 세마포어 (너무 많은 동시 AI/API 요청 방지)
 ANALYSIS_SEMAPHORE = asyncio.Semaphore(5)  # 동시에 최대 5종목 분석
 
@@ -163,6 +166,20 @@ def parse_price(price_str):
         if not clean_str: return 0
         return int(clean_str)
     except ValueError: return 0
+
+# 🌟 [최적화] 조건식 이름 로드 함수 (파일 읽기 최소화)
+async def load_condition_names():
+    global CACHED_CONDITION_NAMES
+    try:
+        if await run_blocking(os.path.exists, CONDITIONS_NAME_FILE):
+            def _read_cond_names():
+                with open(CONDITIONS_NAME_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    return {str(c['id']): c['name'] for c in data.get('conditions', [])}
+            CACHED_CONDITION_NAMES = await run_blocking(_read_cond_names)
+            strategy_logger.info(f"📁 [캐시] 조건식 이름 로드 완료 ({len(CACHED_CONDITION_NAMES)}개)")
+    except Exception as e:
+        strategy_logger.error(f"조건식 이름 로드 실패: {e}")
 
 # ---------------------------------------------------------
 # 5. 텔레그램 및 리포트 (사진전송 + 리포트 로직 수정)
@@ -291,7 +308,6 @@ async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=
         profit_str = f"{profit_rate:.2f}"
         
         # 🌟 [개선] JSONL 포맷으로 저장 (추후 대시보드 호환성 고려)
-        # 현재는 server.js가 텍스트 정규식을 쓰므로 기존 포맷 유지하되, AI 사유 등을 포함
         log_msg = f"[{timestamp}] {action}: {stk_nm}({stock_code}), 수량: {qty}, 가격: {price_str}원, 사유: {reason}, 수익률: {profit_str}%, 손익금: {int(profit_amt)}\n"
 
         def _write_log():
@@ -323,7 +339,6 @@ async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=
     except Exception as e: strategy_logger.error(f"로그 작성 실패: {e}")
 
     # 🌟 [개선] 로그 파일 보존 기간 확대 (1MB -> 10MB)
-    # 대시보드에서 오늘자 로그가 사라지는 것을 방지
     try:
         if await run_blocking(os.path.exists, TRADES_FILE):
              size = await run_blocking(os.path.getsize, TRADES_FILE)
@@ -926,18 +941,12 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
 
 async def check_for_new_stocks():
     global TRADING_STATE, PROCESSING_STOCKS, PENDING_ORDER_CONDITIONS, BUY_ATTEMPT_HISTORY
+    global CACHED_CONDITION_NAMES # [최적화] 전역 캐시 사용
 
     condition_id = str(BOT_SETTINGS.get('CONDITION_ID') or "0")
     
-    condition_names = {}
-    try:
-        if await run_blocking(os.path.exists, CONDITIONS_NAME_FILE):
-            def _read_cond_names():
-                with open(CONDITIONS_NAME_FILE, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    return {str(c['id']): c['name'] for c in data.get('conditions', [])}
-            condition_names = await run_blocking(_read_cond_names)
-    except: pass
+    # [최적화] 파일 매번 읽지 않고 캐시 사용
+    condition_names = CACHED_CONDITION_NAMES
 
     while True:
         event = ws_manager.pop_condition_event()
@@ -1275,6 +1284,9 @@ async def main():
 
     await asyncio.sleep(5)
     await _sync_initial_condition_list()
+
+    # 🌟 [신규] 봇 시작 시 조건식 이름 목록 한 번만 로드 (병목 제거)
+    await load_condition_names()
 
     strategy_logger.info("🚀 [메인 루프 시작] 비동기 봇이 정상적으로 실행되었습니다.")
 
