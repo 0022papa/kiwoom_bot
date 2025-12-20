@@ -921,7 +921,7 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                 except: pass
         finally:
             if stock_code in PROCESSING_STOCKS: 
-                PROCESSING_STOCKS.remove(stock_code)
+                PROCESSING_STOCKS.discard(stock_code)
 
 
 async def check_for_new_stocks():
@@ -1398,7 +1398,7 @@ async def main():
                         last_balance_sync = datetime.now()
                     last_slow_check = datetime.now()
 
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.1)
 
             elif bot_status == "STOPPED":
                 while ws_manager.pop_condition_event(): pass
