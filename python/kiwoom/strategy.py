@@ -292,7 +292,7 @@ async def send_daily_report():
             f"🏆 승: {win_cnt} / ☠️ 패: {loss_cnt}\n"
             f"📊 승률: {win_rate:.1f}%\n"
             f"{profit_emoji} <b>실현손익: {final_profit:,}원</b>\n"
-            f"<i>{source_msg}</i>\n"  # <--- 이 부분이 수정되었습니다 (span -> i)
+            f"<i>{source_msg}</i>\n"
             f"━━━━━━━━━━━━━━\n"
             f"오늘 하루도 수고하셨습니다! ☕"
         )
@@ -379,8 +379,8 @@ def is_market_open():
             return start <= current_time <= end
         return False
 
-# 🌟 [수정] 차트 패턴 정밀 분석 함수 (반환값: is_good, image_path, reason)
-async def analyze_chart_pattern(stock_code):
+# 🌟 [수정] 차트 패턴 정밀 분석 함수 (condition_id 인자 추가 및 전달)
+async def analyze_chart_pattern(stock_code, condition_id="0"):
     """
     Returns: (is_good, image_path, reason)
     """
@@ -413,7 +413,8 @@ async def analyze_chart_pattern(stock_code):
         image_path = await run_blocking(create_chart_image, stock_code, stk_nm, chart_data)
         
         if image_path:
-            is_buy, reason = await run_blocking(ask_ai_to_buy, image_path)
+            # 🌟 [수정] condition_id를 함께 전달
+            is_buy, reason = await run_blocking(ask_ai_to_buy, image_path, condition_id)
             
             if is_buy:
                 strategy_logger.info(f"🤖 [AI승인] {stock_code}: 매수 추천! ({reason})")
@@ -888,7 +889,8 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
             # 3. 차트 & AI 분석 (Rate Limit 적용 - 차트 조회)
             # 차트 조회는 무겁기 때문에 반드시 제한 필요
             await GLOBAL_API_LIMITER.wait() # 🚦 신호 대기
-            is_good_chart, image_path, ai_reason = await analyze_chart_pattern(stock_code)
+            # 🌟 [수정] condition_id를 함께 전달
+            is_good_chart, image_path, ai_reason = await analyze_chart_pattern(stock_code, condition_id)
             
             if not is_good_chart:
                 RE_ENTRY_COOLDOWN[stock_code] = datetime.now() + timedelta(minutes=10)
