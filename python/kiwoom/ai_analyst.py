@@ -14,14 +14,11 @@ from google.genai import types
 
 load_dotenv()
 
+# 🌟 [수정] 핸들러 설정 제거 -> 메인(strategy.py)의 설정을 따르도록 변경
+# 별도의 핸들러를 붙이면 로그가 중복으로(2번씩) 출력되는 현상이 발생함
 ai_logger = logging.getLogger("AI_Analyst")
-ai_logger.setLevel(logging.INFO)
-
-if not ai_logger.handlers:
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    handler.setFormatter(formatter)
-    ai_logger.addHandler(handler)
+# 레벨 설정은 유지 (필요에 따라 INFO 또는 DEBUG로 조정)
+ai_logger.setLevel(logging.INFO) 
 
 # ---------------------------------------------------------
 # 🔑 다중 API 키 로드 및 클라이언트 풀 생성 로직
@@ -136,7 +133,6 @@ def ask_ai_to_buy(image_path, condition_id="0"):
             """
         }
 
-        # 기본 프롬프트 (ID가 없거나 매칭 안될 때)
         default_prompt = """
         당신은 주식 단타 전문가입니다.
         [매수 기준] 상승 추세가 뚜렷하고, 이평선 지지를 받으며, 거래량이 실린 양봉이 있는가?

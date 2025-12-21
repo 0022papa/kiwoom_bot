@@ -61,7 +61,7 @@ GLOBAL_API_LIMITER = AsyncRateLimiter(max_calls=4, period=1.0)
 ANALYSIS_SEMAPHORE = asyncio.Semaphore(5) # 동시 분석 종목 수
 
 # ---------------------------------------------------------
-# 1. 시스템 환경 설정
+# 1. 시스템 환경 설정 및 로거 초기화
 # ---------------------------------------------------------
 os.environ['TZ'] = 'Asia/Seoul'
 try:
@@ -69,9 +69,8 @@ try:
 except AttributeError:
     pass
 
-# 로거 설정 (기본 레벨 INFO)
+# 모듈 전역 로거 생성
 strategy_logger = logging.getLogger("Strategy")
-strategy_logger.setLevel(logging.INFO)
 
 # ---------------------------------------------------------
 # 2. 파일 경로 및 전역 변수 설정
@@ -92,9 +91,6 @@ LAST_PROFIT_CHECK_TIME = datetime.min
 
 # 🌟 [최적화] 조건식 이름 캐싱용 전역 변수 (파일 I/O 병목 제거)
 CACHED_CONDITION_NAMES = {}
-
-# 🌟 [신규] 동시 분석 제한용 세마포어 (너무 많은 동시 AI/API 요청 방지)
-ANALYSIS_SEMAPHORE = asyncio.Semaphore(5)  # 동시에 최대 5종목 분석
 
 # ---------------------------------------------------------
 # 3. 전략 및 봇 기본 설정
@@ -156,8 +152,8 @@ async def run_blocking(func, *args, **kwargs):
     return await loop.run_in_executor(None, func_call)
 
 def debug_log(msg):
-    if BOT_SETTINGS.get("DEBUG_MODE", False):
-        strategy_logger.debug(f"🕵️ [DEBUG] {msg}")
+    # debug 레벨 로그는 로깅 설정에 따라 출력 여부가 결정됨
+    strategy_logger.debug(f"{msg}")
 
 def parse_price(price_str):
     try:
@@ -283,7 +279,6 @@ async def send_daily_report():
         win_rate = (win_cnt / total_sell_cnt * 100) if total_sell_cnt > 0 else 0
         profit_emoji = "🔴" if final_profit > 0 else "🔵"
 
-        # 🌟 [수정] span 태그를 i 태그로 변경 (텔레그램 지원 태그 사용)
         msg = (
             f"📅 <b>[일별 마감 리포트]</b> {today_str}\n"
             f"━━━━━━━━━━━━━━\n"
@@ -315,7 +310,8 @@ async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=
             with open(TRADES_FILE, 'a', encoding='utf-8') as f: f.write(log_msg)
         await run_blocking(_write_log)
 
-        print(f"📝 [매매기록] {action} {stk_nm} ({profit_str}%) - {reason}")
+        # 🌟 [수정] print 대신 logger 사용
+        strategy_logger.info(f"📝 [매매기록] {action} {stk_nm} ({profit_str}%) - {reason}")
 
         emoji = "🔴 매수" if action == "BUY" else "🔵 매도"
         tg_msg = f"{emoji} <b>체결 알림</b>"
@@ -489,23 +485,24 @@ async def check_auto_condition_change():
     return False
 
 async def run_self_diagnosis():
-    print("\n========================================")
-    print("🩺 시스템 자가 진단 (Self Diagnosis)")
-    print("========================================")
+    # 🌟 [수정] print -> logger
+    strategy_logger.info("========================================")
+    strategy_logger.info("🩺 시스템 자가 진단 (Self Diagnosis)")
+    strategy_logger.info("========================================")
     try:
         test_file = os.path.join(DATA_DIR, "write_test.tmp")
         def _file_test():
             with open(test_file, "w") as f: f.write("test")
             os.remove(test_file)
         await run_blocking(_file_test)
-        print("✅ [파일시스템] /data 디렉토리 쓰기 권한 OK")
+        strategy_logger.info("✅ [파일시스템] /data 디렉토리 쓰기 권한 OK")
     except Exception as e:
-        print(f"❌ [파일시스템] 쓰기 권한 오류! ({e})")
+        strategy_logger.error(f"❌ [파일시스템] 쓰기 권한 오류! ({e})")
 
     if not await run_blocking(os.path.exists, SETTINGS_FILE):
-        print("⚠️ [설정] 설정 파일이 없어 기본값을 생성합니다.")
+        strategy_logger.warning("⚠️ [설정] 설정 파일이 없어 기본값을 생성합니다.")
         await save_settings_to_file()
-    print("========================================\n")
+    strategy_logger.info("========================================\n")
 
 async def set_booting_status(status_msg="BOOTING", target_mode=None):
     try:
@@ -539,7 +536,7 @@ async def set_booting_status(status_msg="BOOTING", target_mode=None):
             os.replace(temp_file, STATUS_FILE)
         await run_blocking(_write, status_data)
     except Exception as e:
-        print(f"⚠️ 부팅 상태 저장 실패: {e}")
+        strategy_logger.error(f"⚠️ 부팅 상태 저장 실패: {e}")
 
 async def load_settings_from_file():
     global BOT_SETTINGS
@@ -581,11 +578,17 @@ async def load_settings_from_file():
             else:
                  BOT_SETTINGS[key] = val if val is not None else default_val
 
+        # 🌟 로깅 설정 업데이트 (여기서는 API 디버그 레벨만 설정, 전체 포맷팅은 setup_logging에서)
         debug_val = BOT_SETTINGS.get("DEBUG_MODE", False)
-        log_level = logging.DEBUG if debug_val else logging.INFO
-        strategy_logger.setLevel(log_level)
+        # 로거 레벨 조정
+        new_level = logging.DEBUG if debug_val else logging.INFO
+        strategy_logger.setLevel(new_level)
+        
         if ws_manager: ws_manager.set_debug_mode(debug_val)
         set_api_debug_mode(debug_val)
+
+        # 🌟 중요: 설정 로드 시마다 메인 로거 포맷도 업데이트 (사용자가 GUI에서 디버그 껐다 켰다 할 수 있으므로)
+        setup_logging(debug_val)
 
         if current_cond_id != new_cond_id:
             BOT_SETTINGS["_INTENDED_STATUS_"] = "RUNNING"
@@ -923,7 +926,7 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                     "ord_no": ord_no
                 }
                 ws_manager.add_subscription(stock_code, "0B")
-                print(f"✅ [주문성공] 주문번호: {ord_no}")
+                strategy_logger.info(f"✅ [주문성공] 주문번호: {ord_no}")
             else:
                 strategy_logger.error(f"❌ [주문실패] {stk_nm}: API 응답 없음")
                 if image_path:
@@ -1216,24 +1219,50 @@ async def _handle_realtime_account(account_data_type):
                 del TRADING_STATE[stock_code]
                 await save_status_to_file(force=True)
 
-def setup_logging():
+# 🌟 [수정] 통합 로깅 설정 함수
+def setup_logging(debug_mode=False):
+    """
+    모든 로거의 포맷과 레벨을 제어하는 중앙 설정 함수
+    debug_mode=True: 파일명, 줄번호 등 상세 출력
+    debug_mode=False: 시간, 메시지 등 필수 정보만 출력
+    """
+    # 루트 로거 가져오기
     logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-    for handler in logger.handlers[:]: logger.removeHandler(handler)
-    formatter = logging.Formatter('[%(asctime)s] (%(name)s) %(levelname)s: %(message)s', datefmt='%H:%M:%S')
+    
+    # 기존 핸들러 제거 (중복 방지)
+    if logger.hasHandlers():
+        logger.handlers.clear()
 
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
+    # 1. 콘솔 핸들러 설정
+    stream_handler = logging.StreamHandler(sys.stdout)
+    
+    if debug_mode:
+        # [디버그 모드] 상세 정보 표시
+        logger.setLevel(logging.DEBUG)
+        console_formatter = logging.Formatter('[%(asctime)s] [%(levelname)s] %(filename)s:%(lineno)d - %(message)s')
+    else:
+        # [운영 모드] 깔끔하게 표시 (INFO 이상)
+        logger.setLevel(logging.INFO)
+        console_formatter = logging.Formatter('[%(asctime)s] %(message)s', datefmt='%H:%M:%S')
+        
+    stream_handler.setFormatter(console_formatter)
+    logger.addHandler(stream_handler)
 
+    # 2. 파일 핸들러 설정 (파일은 항상 상세하게 남김)
     log_dir = "/data/logs"
     os.makedirs(log_dir, exist_ok=True)
-    file_handler = TimedRotatingFileHandler(filename=os.path.join(log_dir, "bot_daily.log"), when="midnight", interval=1, backupCount=7, encoding="utf-8")
-    file_handler.setFormatter(formatter)
+    file_handler = TimedRotatingFileHandler(
+        filename=os.path.join(log_dir, "bot_daily.log"), 
+        when="midnight", interval=1, backupCount=7, encoding="utf-8"
+    )
+    file_formatter = logging.Formatter('[%(asctime)s] [%(levelname)s] %(filename)s:%(lineno)d - %(message)s')
+    file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
 
-    logging.getLogger("WebSocket").setLevel(logging.WARNING)
+    # 3. 외부 라이브러리 로그 레벨 조정 (너무 시끄러운 것들)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("websockets").setLevel(logging.WARNING)
+    logging.getLogger("asyncio").setLevel(logging.WARNING)
 
 # ---------------------------------------------------------
 # 8. 메인 실행부 (asyncio)
@@ -1245,7 +1274,7 @@ async def main():
     stop_event = asyncio.Event()
 
     def _handle_exit():
-        print("\n[System] 종료 신호 수신! 정리 작업 시작...")
+        strategy_logger.info("종료 신호 수신! 정리 작업 시작...")
         stop_event.set()
 
     if sys.platform != "win32":
@@ -1255,7 +1284,8 @@ async def main():
         signal.signal(signal.SIGINT, lambda s, f: _handle_exit())
         signal.signal(signal.SIGTERM, lambda s, f: _handle_exit())
 
-    setup_logging()
+    # 1. 초기 로깅 설정 (기본값)
+    setup_logging(debug_mode=False)
     telegram_task = asyncio.create_task(_telegram_worker())
 
     await run_self_diagnosis()
@@ -1263,6 +1293,8 @@ async def main():
     await run_blocking(create_master_stock_file)
 
     BOT_SETTINGS = DEFAULT_SETTINGS.copy()
+    
+    # 2. 설정 파일 로드 및 로깅 모드 재설정 (여기서 DEBUG_MODE 적용됨)
     await load_settings_from_file()
 
     if MOCK_TRADE:
@@ -1271,7 +1303,7 @@ async def main():
         send_telegram_msg(f"🖥️ [봇 시작] {mode_log}")
     else:
         mode_log = "🚨 [투자모드] 실전투자 (REAL TRADING)"
-        print(f"🔥 경고: 현재 '실전 투자' 모드입니다! 🔥")
+        strategy_logger.warning(f"🔥 경고: 현재 '실전 투자' 모드입니다! 🔥")
         strategy_logger.warning(f"🚀 {mode_log} - 주의: 실제 자금이 운용됩니다.")
         send_telegram_msg(f"🔥 [경고] 실전투자 모드로 봇이 시작되었습니다!")
 
