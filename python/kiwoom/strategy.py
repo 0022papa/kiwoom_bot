@@ -20,7 +20,7 @@ from database import db  # 🌟 DB 모듈 사용
 
 # 기존 동기식 API 함수들 임포트
 from api_v1 import (
-    create_master_stock_file, # DB 버전으로 수정 필요 (아래 코드 참고)
+    create_master_stock_file, 
     fn_kt00018_get_account_balance,
     fn_kt00001_get_deposit,
     fn_ka10001_get_stock_info,
@@ -69,7 +69,7 @@ except AttributeError: pass
 strategy_logger = logging.getLogger("Strategy")
 
 # ---------------------------------------------------------
-# 2. 전역 변수 설정 (파일 경로 변수 제거)
+# 2. 전역 변수 설정
 # ---------------------------------------------------------
 TELEGRAM_QUEUE = asyncio.Queue()
 
@@ -142,7 +142,6 @@ def parse_price(price_str):
         return int(clean_str)
     except ValueError: return 0
 
-# 🌟 [DB 적용] 조건식 이름 로드
 async def load_condition_names():
     global CACHED_CONDITION_NAMES
     try:
@@ -202,7 +201,6 @@ def send_telegram_photo(path, caption):
     try: TELEGRAM_QUEUE.put_nowait({'type': 'photo', 'path': path, 'caption': caption})
     except Exception: pass
 
-# 🌟 [DB 적용] 리포트 생성
 async def send_daily_report():
     try:
         today_str = datetime.now().strftime('%Y-%m-%d')
@@ -246,14 +244,12 @@ async def send_daily_report():
     except Exception as e:
         strategy_logger.error(f"리포트 생성 실패: {e}")
 
-# 🌟 [DB 적용] 로그 기록
 async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=0, profit_amt=0, peak_rate=0, image_path=None, ai_reason=None):
     try:
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         price_str = f"{price:,}"
         profit_str = f"{profit_rate:.2f}"
 
-        # DB 저장용 데이터
         trade_data = {
             "timestamp": timestamp,
             "action": action,
@@ -406,7 +402,6 @@ async def check_auto_condition_change():
 async def run_self_diagnosis():
     strategy_logger.info("🩺 시스템 자가 진단 (Self Diagnosis)")
     try:
-        # DB 연결 테스트
         await run_blocking(db.get_kv, "test_key")
         strategy_logger.info("✅ [DB] SQLite 연결 정상")
     except Exception as e:
@@ -438,7 +433,6 @@ async def set_booting_status(status_msg="BOOTING", target_mode=None):
     except Exception as e:
         strategy_logger.error(f"⚠️ 부팅 상태 저장 실패: {e}")
 
-# 🌟 [DB 적용] 설정 로드
 async def load_settings_from_file():
     global BOT_SETTINGS
     try:
@@ -494,7 +488,6 @@ async def save_settings_to_file():
     try: await run_blocking(db.set_kv, "settings", BOT_SETTINGS)
     except: pass
 
-# 🌟 [DB 적용] 상태 저장
 async def save_status_to_file(force=False):
     global last_heartbeat_time, TRADING_STATE, BOT_SETTINGS, IS_INITIALIZED, RE_ENTRY_COOLDOWN, last_saved_state_hash, TODAY_REALIZED_PROFIT
     if not IS_INITIALIZED: return
@@ -1131,13 +1124,13 @@ async def main():
 
     await run_self_diagnosis()
     await set_booting_status("BOOTING", target_mode=MOCK_TRADE)
-    await run_blocking(create_master_stock_file) # DB 저장 방식으로 변경 필요
+    await run_blocking(create_master_stock_file)
 
     BOT_SETTINGS = DEFAULT_SETTINGS.copy()
     await load_settings_from_file()
 
     if MOCK_TRADE:
-        mode_log = "✅ [투자모드] 모의투자 (Virtual Trading)"
+        mode_log = "✅ [투자모드] 모의투자 (Virtual)"
         strategy_logger.info(f"🚀 {mode_log} - 시스템이 안전하게 시작되었습니다.")
         send_telegram_msg(f"🖥️ [봇 시작] {mode_log}")
     else:
@@ -1166,11 +1159,10 @@ async def main():
     last_slow_check = datetime.now()
     last_force_save = datetime.now()
     last_stopped_log = datetime.now()
-    last_report_date = None
 
     while not stop_event.is_set():
         try:
-            # 🌟 [DB 적용] 명령 큐 확인
+            # DB 명령 큐 확인
             command = await run_blocking(db.pop_command)
             if command:
                 if command['cmd_type'] == 'BULK_SELL':
@@ -1182,7 +1174,7 @@ async def main():
                         
                         def run_bt(signals, settings):
                             results = run_simulation_for_list(signals, settings)
-                            db.set_kv("backtest_result", results) # DB 저장
+                            db.set_kv("backtest_result", results) 
                         
                         await run_blocking(run_bt, payload.get('signals', []), BOT_SETTINGS)
                     except Exception as e:
@@ -1195,12 +1187,21 @@ async def main():
                 await save_status_to_file(force=True)
                 last_force_save = datetime.now()
 
+            # 🌟 [수정] 일별 리포트 전송 로직 (DB 기반 중복 방지 + 시간 제한)
             try:
-                if (datetime.now().hour == 15 and datetime.now().minute >= 40) or (datetime.now().hour > 15):
-                    current_date_str = datetime.now().strftime('%Y-%m-%d')
-                    if last_report_date != current_date_str:
+                now = datetime.now()
+                # 15시 40분 ~ 49분 사이에만 체크
+                if now.hour == 15 and 40 <= now.minute < 50:
+                    today_str = now.strftime('%Y-%m-%d')
+                    
+                    # DB에서 오늘 발송 여부 확인
+                    last_sent_date = await run_blocking(db.get_kv, "last_daily_report_date")
+                    
+                    if last_sent_date != today_str:
                         await send_daily_report()
-                        last_report_date = current_date_str
+                        # 발송 후 DB에 오늘 날짜 저장 (중복 방지)
+                        await run_blocking(db.set_kv, "last_daily_report_date", today_str)
+
             except Exception as e:
                 strategy_logger.error(f"리포트 체크 중 오류: {e}")
 

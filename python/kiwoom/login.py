@@ -31,7 +31,6 @@ def _migrate_token_file_to_db(key):
     try:
         filename = "token_mock.json" if "mock" in key else "token_real.json"
         
-        # 가능한 파일 경로들 확인
         candidates = [
             os.path.join("/data", filename),
             os.path.join(os.getcwd(), filename),
@@ -44,16 +43,14 @@ def _migrate_token_file_to_db(key):
                 try:
                     with open(p, 'r', encoding='utf-8') as f:
                         data = json.load(f)
-                        # 유효성 검사 (토큰과 만료시간이 있는지)
                         if data.get('token') and data.get('expires_at'):
-                            # 만료 시간 체크
                             expires_at = datetime.strptime(data['expires_at'], '%Y-%m-%d %H:%M:%S')
                             if datetime.now() < expires_at:
                                 save_token_to_db(data)
                                 login_logger.info(f"♻️ [마이그레이션] 기존 토큰 파일({filename})을 DB로 복구했습니다.")
                                 return data
                             else:
-                                login_logger.warning(f"⚠️ 기존 토큰 파일({filename})이 만료되어 마이그레이션 하지 않습니다.")
+                                pass 
                 except Exception:
                     continue
     except Exception as e:
@@ -69,38 +66,34 @@ def load_token_from_db():
         token_data = db.get_kv(key)
     except Exception: pass
     
-    # DB에 없으면 파일에서 마이그레이션 시도
     if not token_data:
         token_data = _migrate_token_file_to_db(key)
 
     if token_data:
         try:
             expires_at = datetime.strptime(token_data['expires_at'], '%Y-%m-%d %H:%M:%S')
-            # 만료 10분 전까지만 유효한 것으로 간주
             if datetime.now() < expires_at - timedelta(minutes=10):
                 return token_data['token']
-            else:
-                login_logger.info("db 토큰 만료됨")
         except Exception as e:
             login_logger.error(f"토큰 검증 오류: {e}")
 
     return None
 
 def clear_token_cache():
-    """ 만료된 토큰을 DB에서 삭제(초기화)합니다. """
     key = "token_mock" if MOCK_TRADE else "token_real"
-    try:
-        db.set_kv(key, {}) # 빈 값으로 덮어쓰기
-        login_logger.info("토큰 캐시가 초기화되었습니다.")
+    try: db.set_kv(key, {}) 
     except Exception: pass
 
 def fn_au10001():
     """
-    [OAuth 인증] 토큰 발급 (au10001)
-    - DB에 유효한 토큰이 있으면 재사용
-    - 없으면 API 호출하여 신규 발급
+    [OAuth 인증] 토큰 발급
     """
-    # 1. 캐시된 토큰 확인 (DB + 파일 마이그레이션 포함)
+    # 0. API 키 누락 확인
+    if not KIWOOM_REST_API_KEY or not KIWOOM_SECRET:
+        login_logger.error("❌ [오류] API Key 또는 Secret이 설정되지 않았습니다! config 로그를 확인하세요.")
+        return None
+
+    # 1. 캐시 확인
     cached_token = load_token_from_db()
     if cached_token:
         login_logger.info("📂 유효한 토큰을 로드했습니다.")
@@ -108,42 +101,60 @@ def fn_au10001():
 
     # 2. API 호출
     url = f"{KIWOOM_HOST_URL}/oauth2/token"
+    headers = { "Content-Type": "application/json" }
     
-    headers = {
-        "Content-Type": "application/json"
-    }
+    # 실전투자 API에 맞춘 파라미터 (secretkey)
     payload = {
         "grant_type": "client_credentials",
         "appkey": KIWOOM_REST_API_KEY,
-        "appsecret": KIWOOM_SECRET
+        "secretkey": KIWOOM_SECRET 
     }
     
+    # (디버깅용) 키 마스킹 후 페이로드 구조 출력
+    safe_payload = payload.copy()
+    safe_payload['appkey'] = (payload['appkey'][:5] + "...") if payload['appkey'] else "None"
+    safe_payload['secretkey'] = "******" if payload['secretkey'] else "None"
+    login_logger.info(f"📤 토큰 발급 요청: {safe_payload}")
+
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=10)
         
         if response.status_code == 200:
             data = response.json()
-            access_token = data.get('access_token')
-            expires_in = data.get('expires_in', 86400) # 기본 24시간
             
-            if access_token:
-                expires_at = datetime.now() + timedelta(seconds=int(expires_in))
+            # 🌟 [수정] access_token 또는 token 키 모두 확인
+            access_token = data.get('access_token') or data.get('token')
+            expires_str = None
+
+            # 🌟 [수정] 만료 시간 형식 처리 (초 단위 vs 날짜 문자열)
+            if 'expires_in' in data:
+                # Case A: 초 단위 (예: 86400)
+                expires_in = int(data['expires_in'])
+                expires_at = datetime.now() + timedelta(seconds=expires_in)
                 expires_str = expires_at.strftime('%Y-%m-%d %H:%M:%S')
-                
-                save_token_to_db({
-                    "token": access_token, 
-                    "expires_at": expires_str
-                })
-                
+            elif 'expires_dt' in data:
+                # Case B: 날짜 문자열 (예: 20251222234954)
+                try:
+                    dt_str = data['expires_dt']
+                    expires_at = datetime.strptime(dt_str, '%Y%m%d%H%M%S')
+                    expires_str = expires_at.strftime('%Y-%m-%d %H:%M:%S')
+                except ValueError:
+                    login_logger.warning(f"만료시간 포맷 파싱 실패({data.get('expires_dt')}), 기본값(24h) 사용")
+            
+            # 만료 시간을 못 구했으면 기본 24시간 설정
+            if not expires_str:
+                expires_at = datetime.now() + timedelta(hours=24)
+                expires_str = expires_at.strftime('%Y-%m-%d %H:%M:%S')
+
+            if access_token:
+                save_token_to_db({ "token": access_token, "expires_at": expires_str })
                 login_logger.info(f"✨ 새 토큰 발급 완료 (만료: {expires_str})")
                 return access_token
             else:
-                # 200 OK지만 토큰이 없는 경우 (에러 메시지 로깅)
                 login_logger.error(f"❌ 토큰 응답 내용 오류: {json.dumps(data, ensure_ascii=False)}")
-        
         else:
             login_logger.error(f"토큰 발급 실패 (Status: {response.status_code})")
-            login_logger.error(f"응답 본문: {response.text}")
+            login_logger.error(f"응답: {response.text}")
         
     except Exception as e:
         login_logger.error(f"인증 요청 중 오류: {e}")
@@ -153,4 +164,5 @@ def fn_au10001():
 
 if __name__ == "__main__":
     token = fn_au10001()
-    print("Token:", token)
+    if token: print("Token 발급 성공")
+    else: print("Token 발급 실패")
