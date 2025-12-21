@@ -13,7 +13,8 @@ from collections import deque
 from datetime import datetime, timedelta
 from logging.handlers import TimedRotatingFileHandler
 from functools import partial
-from ai_analyst import create_chart_image, ask_ai_to_buy
+# 🌟 [수정] init_ai_clients 추가 임포트
+from ai_analyst import create_chart_image, ask_ai_to_buy, init_ai_clients
 
 # 기존 동기식 API 함수들 임포트
 from api_v1 import (
@@ -97,7 +98,7 @@ CACHED_CONDITION_NAMES = {}
 # ---------------------------------------------------------
 STRATEGY_PRESETS = {
     "0": { "DESC": "오전급등(공격형)", "STOP_LOSS_RATE": -2.0, "TRAILING_START_RATE": 1.0, "TRAILING_STOP_RATE": -0.6, "RE_ENTRY_COOLDOWN_MIN": 60, "MIN_BUY_SELL_RATIO": 0.5 },
-    "1": { "DESC": "눌림목(안정형)", "STOP_LOSS_RATE": -2.0, "TRAILING_START_RATE": 1.0, "TRAILING_STOP_RATE": -0.6, "RE_ENTRY_COOLDOWN_MIN": 30, "MIN_BUY_SELL_RATIO": 0.8 },
+    "1": { "DESC": "눌림목(안정형)", "STOP_LOSS_RATE": -2.0, "TRAILING_START_RATE": 1.0, "TRAILING_STOP_RATE": -0.6, "RE_ENTRY_COOLDOWN_MIN": 30, "MIN_BUY_SELL_RATIO": 0.5 },
     "2": { "DESC": "종가베팅(오버나잇)", "STOP_LOSS_RATE": -2.0, "TRAILING_START_RATE": 1.0, "TRAILING_STOP_RATE": -0.6, "RE_ENTRY_COOLDOWN_MIN": 0, "MIN_BUY_SELL_RATIO": 0.5 }
 }
 
@@ -1286,6 +1287,10 @@ async def main():
 
     # 1. 초기 로깅 설정 (기본값)
     setup_logging(debug_mode=False)
+    
+    # 🌟 [수정] 로깅 설정 후 AI 클라이언트 초기화 호출 (로그 누락 방지)
+    init_ai_clients()
+
     telegram_task = asyncio.create_task(_telegram_worker())
 
     await run_self_diagnosis()

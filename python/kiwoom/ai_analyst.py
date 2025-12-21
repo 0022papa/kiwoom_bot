@@ -14,35 +14,41 @@ from google.genai import types
 
 load_dotenv()
 
-# 🌟 [수정] 핸들러 설정 제거 -> 메인(strategy.py)의 설정을 따르도록 변경
-# 별도의 핸들러를 붙이면 로그가 중복으로(2번씩) 출력되는 현상이 발생함
+# 핸들러 설정 없이 로거만 생성 (strategy.py의 설정을 따름)
 ai_logger = logging.getLogger("AI_Analyst")
-# 레벨 설정은 유지 (필요에 따라 INFO 또는 DEBUG로 조정)
 ai_logger.setLevel(logging.INFO) 
 
-# ---------------------------------------------------------
-# 🔑 다중 API 키 로드 및 클라이언트 풀 생성 로직
-# ---------------------------------------------------------
-api_key_list = []
+# 전역 변수로 클라이언트 풀 선언
+CLIENT_POOL = []
 
-if os.getenv("GOOGLE_API_KEY"):
-    api_key_list.append(os.getenv("GOOGLE_API_KEY"))
+def init_ai_clients():
+    """
+    환경변수에서 API 키를 로드하고 클라이언트 풀을 초기화합니다.
+    메인 로깅 설정이 완료된 후 호출되어야 파일에 로그가 기록됩니다.
+    """
+    global CLIENT_POOL
+    
+    api_key_list = []
 
-if os.getenv("GOOGLE_API_KEYS"):
-    keys = os.getenv("GOOGLE_API_KEYS").split(',')
-    for k in keys:
-        clean_key = k.strip()
-        if clean_key:
-            api_key_list.append(clean_key)
+    if os.getenv("GOOGLE_API_KEY"):
+        api_key_list.append(os.getenv("GOOGLE_API_KEY"))
 
-api_key_list = list(set(api_key_list))
+    if os.getenv("GOOGLE_API_KEYS"):
+        keys = os.getenv("GOOGLE_API_KEYS").split(',')
+        for k in keys:
+            clean_key = k.strip()
+            if clean_key:
+                api_key_list.append(clean_key)
 
-if not api_key_list:
-    ai_logger.error("❌ Google API 키가 설정되지 않았습니다. .env 파일을 확인해주세요.")
-    CLIENT_POOL = []
-else:
-    ai_logger.info(f"🔑 로드된 API 키 개수: {len(api_key_list)}개 (부하 분산 적용됨)")
-    CLIENT_POOL = [genai.Client(api_key=k) for k in api_key_list]
+    api_key_list = list(set(api_key_list))
+
+    if not api_key_list:
+        ai_logger.error("❌ Google API 키가 설정되지 않았습니다. .env 파일을 확인해주세요.")
+        CLIENT_POOL = []
+    else:
+        # 이 시점에는 strategy.py의 로깅 설정이 적용되어 파일에 기록됩니다.
+        ai_logger.info(f"🔑 로드된 API 키 개수: {len(api_key_list)}개 (부하 분산 적용됨)")
+        CLIENT_POOL = [genai.Client(api_key=k) for k in api_key_list]
 
 
 def create_chart_image(stock_code, stock_name, candle_data):
@@ -100,7 +106,10 @@ def ask_ai_to_buy(image_path, condition_id="0"):
     """
     try:
         if not CLIENT_POOL:
-            return False, "API Key Error"
+            # 혹시 초기화가 안 되었을 경우를 대비해 여기서 시도할 수도 있지만,
+            # 원칙적으로 init_ai_clients()가 먼저 호출되어야 합니다.
+            ai_logger.error("⚠️ Google AI 클라이언트가 초기화되지 않았습니다.")
+            return False, "API Client Not Initialized"
 
         if not os.path.exists(image_path):
             ai_logger.error("이미지 파일이 존재하지 않습니다.")
