@@ -283,6 +283,7 @@ async def send_daily_report():
         win_rate = (win_cnt / total_sell_cnt * 100) if total_sell_cnt > 0 else 0
         profit_emoji = "🔴" if final_profit > 0 else "🔵"
 
+        # 🌟 [수정] span 태그를 i 태그로 변경 (텔레그램 지원 태그 사용)
         msg = (
             f"📅 <b>[일별 마감 리포트]</b> {today_str}\n"
             f"━━━━━━━━━━━━━━\n"
@@ -291,7 +292,7 @@ async def send_daily_report():
             f"🏆 승: {win_cnt} / ☠️ 패: {loss_cnt}\n"
             f"📊 승률: {win_rate:.1f}%\n"
             f"{profit_emoji} <b>실현손익: {final_profit:,}원</b>\n"
-            f"<span class='text-xs text-gray-400'>{source_msg}</span>\n"
+            f"<i>{source_msg}</i>\n"  # <--- 이 부분이 수정되었습니다 (span -> i)
             f"━━━━━━━━━━━━━━\n"
             f"오늘 하루도 수고하셨습니다! ☕"
         )
