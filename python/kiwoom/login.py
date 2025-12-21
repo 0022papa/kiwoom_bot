@@ -1,158 +1,156 @@
 import requests
 import json
-import logging
-import threading
 import os
-import time
+import logging
+import traceback
 from datetime import datetime, timedelta
-from config import KIWOOM_HOST_URL, KIWOOM_REST_API_KEY, KIWOOM_SECRET, MOCK_TRADE
 
-# ---------------------------------------------------------
-# 1. 로거 및 전역 변수 설정
-# ---------------------------------------------------------
-logger = logging.getLogger("Login")
-logger.setLevel(logging.INFO)
+from config import (
+    KIWOOM_HOST_URL, KIWOOM_REST_API_KEY, KIWOOM_SECRET, 
+    MOCK_TRADE, DEBUG_MODE
+)
 
-TOKEN_CACHE = {
-    'token': None,
-    'expires_at': datetime.min
-}
-token_lock = threading.Lock()
+# DB 모듈 임포트
+from database import db
 
-# 투자 모드에 따른 토큰 파일 경로 분리
-TOKEN_FILE = "/data/token_mock.json" if MOCK_TRADE else "/data/token_real.json"
+# 로거 설정
+login_logger = logging.getLogger("Login")
+login_logger.setLevel(logging.INFO)
 
-# ---------------------------------------------------------
-# 2. 내부 유틸리티 함수 (파일 I/O)
-# ---------------------------------------------------------
-def _load_token_from_file():
-    """ 
-    저장된 토큰 파일에서 유효한 토큰을 읽어옵니다. 
-    만료 시간이 10분 이상 남았을 때만 반환합니다.
-    """
-    if not os.path.exists(TOKEN_FILE):
-        return None
-    
+def save_token_to_db(token_data):
+    """ 토큰 정보를 DB에 저장합니다. """
+    key = "token_mock" if MOCK_TRADE else "token_real"
     try:
-        with open(TOKEN_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            token = data.get('token')
-            expires_str = data.get('expires_at')
-            
-            if token and expires_str:
-                expires_at = datetime.strptime(expires_str, "%Y-%m-%d %H:%M:%S")
-                # 10분 여유를 두고 만료 체크
-                if expires_at > datetime.now() + timedelta(minutes=10):
-                    return token
+        db.set_kv(key, token_data)
+        if DEBUG_MODE: login_logger.debug(f"토큰 DB 저장 완료 ({key})")
     except Exception as e:
-        logger.warning(f"⚠️ 토큰 파일 읽기 실패 (재발급 진행): {e}")
-        # 파일이 깨졌을 수 있으므로 삭제 시도
-        try: os.remove(TOKEN_FILE)
-        except: pass
-    
+        login_logger.error(f"토큰 저장 실패: {e}")
+
+def _migrate_token_file_to_db(key):
+    """ [복구용] 기존 JSON 파일에 있는 토큰을 DB로 마이그레이션 합니다. """
+    try:
+        filename = "token_mock.json" if "mock" in key else "token_real.json"
+        
+        # 가능한 파일 경로들 확인
+        candidates = [
+            os.path.join("/data", filename),
+            os.path.join(os.getcwd(), filename),
+            os.path.join("/data/kiwoom_bot_data", filename),
+            f"/app/{filename}"
+        ]
+        
+        for p in candidates:
+            if os.path.exists(p):
+                try:
+                    with open(p, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        # 유효성 검사 (토큰과 만료시간이 있는지)
+                        if data.get('token') and data.get('expires_at'):
+                            # 만료 시간 체크
+                            expires_at = datetime.strptime(data['expires_at'], '%Y-%m-%d %H:%M:%S')
+                            if datetime.now() < expires_at:
+                                save_token_to_db(data)
+                                login_logger.info(f"♻️ [마이그레이션] 기존 토큰 파일({filename})을 DB로 복구했습니다.")
+                                return data
+                            else:
+                                login_logger.warning(f"⚠️ 기존 토큰 파일({filename})이 만료되어 마이그레이션 하지 않습니다.")
+                except Exception:
+                    continue
+    except Exception as e:
+        login_logger.warning(f"토큰 마이그레이션 중 오류: {e}")
     return None
 
-def _save_token_to_file(token, expires_dt_obj):
-    """ 발급받은 토큰과 만료 시간을 파일에 저장합니다. """
+def load_token_from_db():
+    """ DB에서 유효한 토큰을 불러옵니다. """
+    key = "token_mock" if MOCK_TRADE else "token_real"
+    
+    token_data = None
     try:
-        with open(TOKEN_FILE, 'w', encoding='utf-8') as f:
-            json.dump({
-                "token": token,
-                "expires_at": expires_dt_obj.strftime("%Y-%m-%d %H:%M:%S")
-            }, f, indent=4)
-        logger.debug(f"💾 토큰 파일 저장 완료 ({TOKEN_FILE})")
-    except Exception as e:
-        logger.error(f"❌ 토큰 파일 저장 실패: {e}")
+        token_data = db.get_kv(key)
+    except Exception: pass
+    
+    # DB에 없으면 파일에서 마이그레이션 시도
+    if not token_data:
+        token_data = _migrate_token_file_to_db(key)
 
-# ---------------------------------------------------------
-# 3. 외부 인터페이스 함수
-# ---------------------------------------------------------
-def fn_au10001():
-    """ 
-    [OAuth 2.0] 접근 토큰(Access Token) 발급/조회 함수 (Thread-Safe)
-    - 메모리 캐시 -> 파일 캐시 -> API 호출 순으로 확인합니다.
-    """
-    global TOKEN_CACHE
-
-    with token_lock:
-        # 1. 메모리 캐시 확인 (가장 빠름)
-        if TOKEN_CACHE['token'] and TOKEN_CACHE['expires_at'] > datetime.now() + timedelta(minutes=10):
-            return TOKEN_CACHE['token']
-
-        # 2. 파일 캐시 확인 (재시작 시 유용)
-        file_token = _load_token_from_file()
-        if file_token:
-            logger.info("📂 파일에서 유효한 토큰을 로드했습니다.")
-            TOKEN_CACHE['token'] = file_token
-            # 파일에서 읽은 경우 만료시간을 정확히 알기 어려우므로(함수 반환값 한계), 
-            # 안전하게 메모리상으로는 6시간 뒤로 가정 (다음 호출때 파일 다시 읽음)
-            # *엄밀하게 하려면 _load_token_from_file이 만료시간도 리턴해야 하지만, 단순화를 위해 유지
-            TOKEN_CACHE['expires_at'] = datetime.now() + timedelta(hours=6) 
-            return file_token
-
-        # 3. API 호출하여 새 토큰 발급
-        url = f"{KIWOOM_HOST_URL}/oauth2/token"
-        headers = {'Content-Type': 'application/json;charset=UTF-8'}
-        
-        params = {
-            'grant_type': 'client_credentials',
-            'appkey': KIWOOM_REST_API_KEY,
-            'secretkey': KIWOOM_SECRET 
-        }
-
+    if token_data:
         try:
-            logger.info("🔑 새로운 접근 토큰을 요청합니다...")
-            
-            response = requests.post(url, headers=headers, json=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            
-            # 응답 키 확인 ('access_token' or 'token')
-            new_token = data.get('access_token') or data.get('token')
-            expires_in = data.get('expires_in') # 초 단위 수명 (보통 86400)
-            expires_dt_raw = data.get('expires_dt') # "20251119213438" 형식
-
-            if new_token:
-                TOKEN_CACHE['token'] = new_token
-                
-                # 만료 시간 계산
-                try:
-                    if expires_dt_raw:
-                         # 키움 날짜 포맷 (YYYYMMDDHHMMSS)
-                         TOKEN_CACHE['expires_at'] = datetime.strptime(str(expires_dt_raw), "%Y%m%d%H%M%S")
-                    elif expires_in:
-                         # 초 단위 수명 사용
-                         TOKEN_CACHE['expires_at'] = datetime.now() + timedelta(seconds=int(expires_in))
-                    else:
-                         # 기본값 (6시간)
-                         TOKEN_CACHE['expires_at'] = datetime.now() + timedelta(hours=6)
-                except Exception:
-                    TOKEN_CACHE['expires_at'] = datetime.now() + timedelta(hours=6)
-                
-                # 파일에 저장
-                _save_token_to_file(new_token, TOKEN_CACHE['expires_at'])
-                logger.info("✅ 토큰 발급 완료.")
-                return new_token
+            expires_at = datetime.strptime(token_data['expires_at'], '%Y-%m-%d %H:%M:%S')
+            # 만료 10분 전까지만 유효한 것으로 간주
+            if datetime.now() < expires_at - timedelta(minutes=10):
+                return token_data['token']
             else:
-                logger.error(f"❌ 토큰 응답 오류 (토큰 키 없음): {data}")
-                return None
-
+                login_logger.info("db 토큰 만료됨")
         except Exception as e:
-            logger.error(f"❌ 토큰 발급 요청 실패: {e}")
-            return None
+            login_logger.error(f"토큰 검증 오류: {e}")
+
+    return None
 
 def clear_token_cache():
-    """ 
-    인증 실패(401) 시 호출하여 캐시된 토큰을 삭제합니다. 
-    다음 호출 시 강제로 새 토큰을 발급받게 됩니다.
+    """ 만료된 토큰을 DB에서 삭제(초기화)합니다. """
+    key = "token_mock" if MOCK_TRADE else "token_real"
+    try:
+        db.set_kv(key, {}) # 빈 값으로 덮어쓰기
+        login_logger.info("토큰 캐시가 초기화되었습니다.")
+    except Exception: pass
+
+def fn_au10001():
     """
-    with token_lock:
-        TOKEN_CACHE['token'] = None
-        TOKEN_CACHE['expires_at'] = datetime.min
+    [OAuth 인증] 토큰 발급 (au10001)
+    - DB에 유효한 토큰이 있으면 재사용
+    - 없으면 API 호출하여 신규 발급
+    """
+    # 1. 캐시된 토큰 확인 (DB + 파일 마이그레이션 포함)
+    cached_token = load_token_from_db()
+    if cached_token:
+        login_logger.info("📂 유효한 토큰을 로드했습니다.")
+        return cached_token
+
+    # 2. API 호출
+    url = f"{KIWOOM_HOST_URL}/oauth2/token"
     
-    if os.path.exists(TOKEN_FILE):
-        try:
-            os.remove(TOKEN_FILE)
-            logger.info("🗑️ 유효하지 않은 토큰 파일을 삭제했습니다.")
-        except Exception as e:
-            logger.error(f"토큰 파일 삭제 실패: {e}")
+    headers = {
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "grant_type": "client_credentials",
+        "appkey": KIWOOM_REST_API_KEY,
+        "appsecret": KIWOOM_SECRET
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            access_token = data.get('access_token')
+            expires_in = data.get('expires_in', 86400) # 기본 24시간
+            
+            if access_token:
+                expires_at = datetime.now() + timedelta(seconds=int(expires_in))
+                expires_str = expires_at.strftime('%Y-%m-%d %H:%M:%S')
+                
+                save_token_to_db({
+                    "token": access_token, 
+                    "expires_at": expires_str
+                })
+                
+                login_logger.info(f"✨ 새 토큰 발급 완료 (만료: {expires_str})")
+                return access_token
+            else:
+                # 200 OK지만 토큰이 없는 경우 (에러 메시지 로깅)
+                login_logger.error(f"❌ 토큰 응답 내용 오류: {json.dumps(data, ensure_ascii=False)}")
+        
+        else:
+            login_logger.error(f"토큰 발급 실패 (Status: {response.status_code})")
+            login_logger.error(f"응답 본문: {response.text}")
+        
+    except Exception as e:
+        login_logger.error(f"인증 요청 중 오류: {e}")
+        login_logger.debug(traceback.format_exc())
+        
+    return None
+
+if __name__ == "__main__":
+    token = fn_au10001()
+    print("Token:", token)

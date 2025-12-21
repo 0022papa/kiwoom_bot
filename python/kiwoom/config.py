@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import sqlite3
 from dotenv import load_dotenv
 
 # ---------------------------------------------------------
@@ -14,38 +15,40 @@ def str_to_bool(val):
     return str(val).lower() in ('true', '1', 't', 'yes', 'on')
 
 # ---------------------------------------------------------
-# 2. 파일 경로 설정
+# 2. 파일 및 DB 경로 설정
 # ---------------------------------------------------------
 DATA_DIR = "/data"
-SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
+DB_PATH = os.path.join(DATA_DIR, "kiwoom_bot.db")
 
 # ---------------------------------------------------------
-# 3. 설정 로드 (우선순위: settings.json > .env)
+# 3. 설정 로드 (우선순위: DB > .env)
 # ---------------------------------------------------------
 # 기본값 (환경변수)
 MOCK_TRADE = str_to_bool(os.getenv("MOCK_TRADE", "True"))
 DEBUG_MODE = str_to_bool(os.getenv("DEBUG_MODE", "False"))
 
-# settings.json 파일이 있다면 덮어쓰기 (Node.js 서버와 동기화)
-if os.path.exists(SETTINGS_FILE):
-    for _ in range(5):  # 최대 5회 재시도 (파일 I/O 충돌 방지)
-        try:
-            with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                if not content: raise ValueError("Empty File")
+# 🌟 [수정] 파일 대신 DB에서 설정 로드
+if os.path.exists(DB_PATH):
+    try:
+        # config.py는 의존성 문제 방지를 위해 sqlite3 직접 연결
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM kv_store WHERE key='settings'")
+        row = cursor.fetchone()
+        
+        if row:
+            settings = json.loads(row[0])
 
-                settings = json.loads(content)
+            # 모의투자 여부 업데이트
+            if "MOCK_TRADE" in settings:
+                MOCK_TRADE = str_to_bool(settings["MOCK_TRADE"])
 
-                # 모의투자 여부 업데이트
-                if "MOCK_TRADE" in settings:
-                    MOCK_TRADE = str_to_bool(settings["MOCK_TRADE"])
-
-                # 디버그 모드 업데이트
-                if "DEBUG_MODE" in settings:
-                    DEBUG_MODE = str_to_bool(settings["DEBUG_MODE"])
-            break
-        except Exception:
-            time.sleep(0.1)
+            # 디버그 모드 업데이트
+            if "DEBUG_MODE" in settings:
+                DEBUG_MODE = str_to_bool(settings["DEBUG_MODE"])
+        conn.close()
+    except Exception as e:
+        print(f"[Config] ⚠️ DB 설정 로드 실패 (기본값 사용): {e}")
 
 # ---------------------------------------------------------
 # 4. 텔레그램 설정

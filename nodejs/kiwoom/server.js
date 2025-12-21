@@ -1,5 +1,5 @@
 const express = require('express');
-const fs = require('fs').promises; // fs.promises 사용
+const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const cookieParser = require('cookie-parser');
 
@@ -9,17 +9,80 @@ const port = 3000;
 const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD || "admin1234";
 const SESSION_SECRET = process.env.SESSION_SECRET || "secret_key_change_me";
 
-// 데이터 경로 설정
+// 데이터 경로 설정 (DB 파일 위치)
 const DATA_DIR = "/data";
-const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
-const STATUS_FILE = path.join(DATA_DIR, "status.json");
-const CONDITIONS_FILE = path.join(DATA_DIR, "conditions.json");
-const TRADES_FILE = path.join(DATA_DIR, "trades.log");
-const CURRENT_CONDITIONS_FILE = path.join(DATA_DIR, "current_conditions.json");
-const BACKTEST_REQ_FILE = path.join(DATA_DIR, "backtest_req.json");
-const BACKTEST_RES_FILE = path.join(DATA_DIR, "backtest_res.json");
-const MASTER_STOCKS_FILE = path.join(DATA_DIR, "master_stocks.json");
-const BULK_SELL_FILE = path.join(DATA_DIR, "bulk_sell_req.json");
+const DB_PATH = path.join(DATA_DIR, "kiwoom_bot.db");
+
+// DB 연결 및 초기화
+const db = new sqlite3.Database(DB_PATH);
+
+db.serialize(() => {
+    // 1. 키-값 저장소 (Settings, Status, Conditions 등)
+    db.run(`CREATE TABLE IF NOT EXISTS kv_store (
+        key TEXT PRIMARY KEY,
+        value TEXT,
+        updated_at TEXT
+    )`);
+    
+    // 2. 매매 로그
+    db.run(`CREATE TABLE IF NOT EXISTS trade_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT,
+        action TEXT,
+        stock_code TEXT,
+        stock_name TEXT,
+        qty INTEGER,
+        price REAL,
+        reason TEXT,
+        profit_rate REAL,
+        profit_amt INTEGER,
+        image_path TEXT,
+        ai_reason TEXT
+    )`);
+
+    // 3. 명령 큐
+    db.run(`CREATE TABLE IF NOT EXISTS command_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cmd_type TEXT,
+        payload TEXT,
+        status TEXT DEFAULT 'PENDING',
+        created_at TEXT
+    )`);
+});
+
+// --- DB Helper Functions ---
+const getKV = (key) => {
+    return new Promise((resolve, reject) => {
+        db.get("SELECT value FROM kv_store WHERE key = ?", [key], (err, row) => {
+            if (err) reject(err);
+            else resolve(row ? JSON.parse(row.value) : null);
+        });
+    });
+};
+
+const setKV = (key, value) => {
+    return new Promise((resolve, reject) => {
+        const valStr = JSON.stringify(value);
+        const now = new Date().toISOString();
+        db.run("INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES (?, ?, ?)", 
+            [key, valStr, now], (err) => {
+                if (err) reject(err);
+                else resolve(true);
+            });
+    });
+};
+
+const sendCommand = (type, payload) => {
+    return new Promise((resolve, reject) => {
+        const now = new Date().toISOString();
+        const payloadStr = JSON.stringify(payload);
+        db.run("INSERT INTO command_queue (cmd_type, payload, created_at) VALUES (?, ?, ?)",
+            [type, payloadStr, now], (err) => {
+                if (err) reject(err);
+                else resolve(true);
+            });
+    });
+};
 
 app.use(express.json()); 
 app.use(cookieParser(SESSION_SECRET)); 
@@ -57,10 +120,11 @@ app.get('/', (req, res) => {
 });
 
 // 3. API 라우트
-// 일괄 청산 요청 처리
+
+// 일괄 청산 요청 처리 (Command Queue 사용)
 app.post('/api/bulk_sell', checkAuth, async (req, res) => {
     try {
-        await fs.writeFile(BULK_SELL_FILE, JSON.stringify({ timestamp: Date.now() }), 'utf-8');
+        await sendCommand("BULK_SELL", { timestamp: Date.now() });
         res.json({ success: true, message: "일괄 청산 명령이 전송되었습니다." });
     } catch (error) {
         console.error("Bulk sell trigger error:", error);
@@ -68,58 +132,48 @@ app.post('/api/bulk_sell', checkAuth, async (req, res) => {
     }
 });
 
-// 봇 상태 조회
+// 봇 상태 조회 (KV Store)
 app.get('/api/status', checkAuth, async (req, res) => {
     try {
-        let statusData;
-        try {
-            statusData = await fs.readFile(STATUS_FILE, 'utf-8');
-        } catch (e) {
-            return res.json({ bot_status: 'OFFLINE', active_mode: '⛔ 파일 없음', is_offline: true, last_sync_ago: 999 });
-        }
+        db.get("SELECT value, updated_at FROM kv_store WHERE key='status'", [], (err, row) => {
+            if (err || !row) {
+                return res.json({ bot_status: 'OFFLINE', active_mode: '⛔ 데이터 없음', is_offline: true, last_sync_ago: 999 });
+            }
 
-        let status = {};
-        try {
-            status = JSON.parse(statusData);
-        } catch (e) {
-            console.error("JSON 파싱 에러:", e);
-            return res.json({ bot_status: 'OFFLINE', active_mode: '⛔ JSON 오류', is_offline: true });
-        }
-        
-        let diffSeconds = 0;
-        try {
-            const stats = await fs.stat(STATUS_FILE);
-            const fileTime = new Date(stats.mtime).getTime();
-            diffSeconds = (Date.now() - fileTime) / 1000;
-        } catch(e) {}
+            let status = {};
+            try { status = JSON.parse(row.value); } catch (e) {}
 
-        status.is_offline = false; 
-        status.last_sync_ago = Math.abs(Math.round(diffSeconds)); 
-        
-        if (status.last_sync_ago > 86400) { 
-             status.last_sync_ago = 0; 
-        }
+            let diffSeconds = 0;
+            if (row.updated_at) {
+                const lastUpdate = new Date(row.updated_at).getTime();
+                diffSeconds = (Date.now() - lastUpdate) / 1000;
+            }
 
-        res.json(status);
+            status.is_offline = diffSeconds > 60; // 60초 이상 갱신 없으면 오프라인
+            status.last_sync_ago = Math.floor(Math.abs(diffSeconds)); 
+            
+            if (status.last_sync_ago > 86400) status.last_sync_ago = 0; 
 
+            res.json(status);
+        });
     } catch (error) {
         console.error("Status check error:", error);
         res.json({ bot_status: 'OFFLINE', active_mode: '⛔ 서버 오류', is_offline: true, last_sync_ago: 999 });
     }
 });
 
-// 설정 읽기
+// 설정 읽기 (KV Store)
 app.get('/api/settings', checkAuth, async (req, res) => {
     try {
-        const settingsData = await fs.readFile(SETTINGS_FILE, 'utf-8');
-        res.json(JSON.parse(settingsData));
+        const settings = await getKV("settings");
+        res.json(settings || {});
     } catch (error) {
         console.error("Load settings error:", error);
         res.status(500).json({ message: 'Error loading settings' });
     }
 });
 
-// 설정 저장 (Atomic Write)
+// 설정 저장 (KV Store)
 app.post('/api/settings', checkAuth, async (req, res) => {
     try {
         const settings = req.body;
@@ -134,10 +188,7 @@ app.post('/api/settings', checkAuth, async (req, res) => {
         
         if(settings.OVERNIGHT_COND_IDS === undefined) settings.OVERNIGHT_COND_IDS = "2";
         
-        const tempFile = SETTINGS_FILE + ".tmp";
-        await fs.writeFile(tempFile, JSON.stringify(settings, null, 4), 'utf-8');
-        await fs.rename(tempFile, SETTINGS_FILE);
-
+        await setKV("settings", settings);
         res.json({ success: true, message: 'Settings saved' });
     } catch (error) {
         console.error("Settings save error:", error);
@@ -145,41 +196,31 @@ app.post('/api/settings', checkAuth, async (req, res) => {
     }
 });
 
-// 기타 API들
+// 기타 API들 (KV Store)
 app.get('/api/conditions', checkAuth, async (req, res) => {
     try {
-        const data = await fs.readFile(CONDITIONS_FILE, 'utf-8');
-        res.json(JSON.parse(data));
+        const data = await getKV("conditions");
+        res.json(data || { conditions: [] });
     } catch (error) { res.json({ conditions: [] }); }
 });
 
-// 🌟 [수정] 로그 파일 파싱 로직 개선 (손익금 정보가 있어도 읽을 수 있게 변경)
-app.get('/api/trades', checkAuth, async (req, res) => {
-    try {
-        const logData = await fs.readFile(TRADES_FILE, 'utf-8');
-        // 줄바꿈으로 나누고, 비어있지 않은 줄만 JSON 파싱
-        const trades = logData
-            .split('\n')
-            .filter(line => line.trim() !== '')
-            .map(line => {
-                try { return JSON.parse(line); } 
-                catch (e) { return null; }
-            })
-            .filter(item => item !== null)
-            .reverse() // 최신순 정렬
-            .slice(0, 100); // 최근 100건만
-
-        res.json({ trades: trades });
-    } catch (error) { 
-        res.json({ trades: [] }); 
-    }
+// 로그 파일 파싱 -> DB 조회로 변경
+app.get('/api/trades', checkAuth, (req, res) => {
+    db.all("SELECT * FROM trade_logs ORDER BY id DESC LIMIT 100", [], (err, rows) => {
+        if (err) {
+            console.error("Trades fetch error:", err);
+            res.json({ trades: [] });
+        } else {
+            res.json({ trades: rows });
+        }
+    });
 });
 
 app.get('/api/current_conditions', checkAuth, async (req, res) => {
     try {
-        try { await fs.access(CURRENT_CONDITIONS_FILE); } catch { return res.json({ stocks: [] }); }
-        const data = await fs.readFile(CURRENT_CONDITIONS_FILE, 'utf-8');
-        const stocksObj = JSON.parse(data);
+        const stocksObj = await getKV("current_conditions");
+        if (!stocksObj) return res.json({ stocks: [] });
+
         const stocksArray = Object.values(stocksObj).sort((a, b) => b.time.localeCompare(a.time));
         res.json({ stocks: stocksArray });
     } catch (error) { res.json({ stocks: [] }); }
@@ -187,15 +228,15 @@ app.get('/api/current_conditions', checkAuth, async (req, res) => {
 
 app.get('/api/master_stocks', checkAuth, async (req, res) => {
     try {
-        try { await fs.access(MASTER_STOCKS_FILE); } catch { return res.json({}); }
-        const data = await fs.readFile(MASTER_STOCKS_FILE, 'utf-8');
-        const stockDict = JSON.parse(data);
+        const stockDict = await getKV("master_stocks");
+        if (!stockDict) return res.json({ stocks: [] });
+
         const stockList = Object.entries(stockDict).map(([code, name]) => ({ code, name }));
         res.json({ stocks: stockList });
     } catch (error) { res.json({ stocks: [] }); }
 });
 
-// 백테스팅 요청
+// 백테스팅 요청 (Command Queue)
 app.post('/api/backtest/request', checkAuth, async (req, res) => {
     console.log("📨 [Node.js] 백테스팅 요청 수신함:", JSON.stringify(req.body)); 
 
@@ -203,32 +244,33 @@ app.post('/api/backtest/request', checkAuth, async (req, res) => {
         const { signals } = req.body;
         
         if (!signals || !Array.isArray(signals) || signals.length === 0) {
-            console.error("❌ [Node.js] 데이터 오류: signals가 비어있음");
             return res.status(400).json({ success: false, message: "No signals provided" });
         }
 
-        try { await fs.unlink(BACKTEST_RES_FILE); } catch(e) {}
+        // 결과 초기화 (선택사항)
+        await setKV("backtest_result", null);
         
-        await fs.writeFile(BACKTEST_REQ_FILE, JSON.stringify({ signals }), 'utf-8');
-        console.log(`✅ [Node.js] 요청 파일 생성 완료: ${BACKTEST_REQ_FILE}`);
+        await sendCommand("BACKTEST_REQ", { signals });
+        console.log(`✅ [Node.js] 백테스팅 명령 DB 전송 완료`);
         
         res.json({ success: true });
     } catch (error) { 
-        console.error("❌ [Node.js] 파일 작성 중 에러:", error);
+        console.error("❌ [Node.js] 명령 전송 에러:", error);
         res.status(500).json({ success: false }); 
     }
 });
 
-// 백테스팅 결과 조회
+// 백테스팅 결과 조회 (KV Store)
 app.get('/api/backtest/result', checkAuth, async (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
-
+    
     try {
-        const data = await fs.readFile(BACKTEST_RES_FILE, 'utf-8');
-        const result = JSON.parse(data);
-        res.json({ status: 'complete', results: result });
+        const result = await getKV("backtest_result");
+        if (result) {
+            res.json({ status: 'complete', results: result });
+        } else {
+            res.json({ status: 'processing' });
+        }
     } catch (error) { 
         res.json({ status: 'processing' }); 
     }

@@ -13,12 +13,14 @@ from collections import deque
 from datetime import datetime, timedelta
 from logging.handlers import TimedRotatingFileHandler
 from functools import partial
-# 🌟 [수정] init_ai_clients 추가 임포트
+
+# AI 및 DB 모듈 임포트
 from ai_analyst import create_chart_image, ask_ai_to_buy, init_ai_clients
+from database import db  # 🌟 DB 모듈 사용
 
 # 기존 동기식 API 함수들 임포트
 from api_v1 import (
-    create_master_stock_file,
+    create_master_stock_file, # DB 버전으로 수정 필요 (아래 코드 참고)
     fn_kt00018_get_account_balance,
     fn_kt00001_get_deposit,
     fn_ka10001_get_stock_info,
@@ -35,7 +37,7 @@ from websocket_manager import KiwoomWebSocketManager
 from backtesting import run_simulation_for_list
 
 # ---------------------------------------------------------
-# 🌟 [신규] 비동기 속도 제한 클래스 (Proactive Rate Limiter)
+# 비동기 속도 제한 클래스
 # ---------------------------------------------------------
 class AsyncRateLimiter:
     def __init__(self, max_calls, period=1.0):
@@ -46,51 +48,33 @@ class AsyncRateLimiter:
     async def wait(self):
         while True:
             now = time.time()
-            # 기간 지난 기록 제거
             while self.timestamps and now - self.timestamps[0] > self.period:
                 self.timestamps.popleft()
             
             if len(self.timestamps) < self.max_calls:
                 self.timestamps.append(now)
                 return
-            
-            # 제한에 걸리면 잠시 대기
             await asyncio.sleep(0.1)
 
-# 🌟 전역 제한 설정: 초당 4회 호출로 제한 (키움 권장: 초당 5회 미만)
 GLOBAL_API_LIMITER = AsyncRateLimiter(max_calls=4, period=1.0)
-ANALYSIS_SEMAPHORE = asyncio.Semaphore(5) # 동시 분석 종목 수
+ANALYSIS_SEMAPHORE = asyncio.Semaphore(5)
 
 # ---------------------------------------------------------
 # 1. 시스템 환경 설정 및 로거 초기화
 # ---------------------------------------------------------
 os.environ['TZ'] = 'Asia/Seoul'
-try:
-    time.tzset()
-except AttributeError:
-    pass
+try: time.tzset()
+except AttributeError: pass
 
-# 모듈 전역 로거 생성
 strategy_logger = logging.getLogger("Strategy")
 
 # ---------------------------------------------------------
-# 2. 파일 경로 및 전역 변수 설정
+# 2. 전역 변수 설정 (파일 경로 변수 제거)
 # ---------------------------------------------------------
-DATA_DIR = "/data"
-SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
-STATUS_FILE = os.path.join(DATA_DIR, "status.json")
-TRADES_FILE = os.path.join(DATA_DIR, "trades.log")
-CURRENT_CONDITIONS_FILE = os.path.join(DATA_DIR, "current_conditions.json")
-CONDITIONS_NAME_FILE = os.path.join(DATA_DIR, "conditions.json")
-
-# asyncio 큐 사용
 TELEGRAM_QUEUE = asyncio.Queue()
 
-# 실현손익 관련 전역 변수
 TODAY_REALIZED_PROFIT = 0
 LAST_PROFIT_CHECK_TIME = datetime.min
-
-# 🌟 [최적화] 조건식 이름 캐싱용 전역 변수 (파일 I/O 병목 제거)
 CACHED_CONDITION_NAMES = {}
 
 # ---------------------------------------------------------
@@ -125,7 +109,6 @@ DEFAULT_SETTINGS = {
 }
 BOT_SETTINGS = DEFAULT_SETTINGS.copy()
 
-# 런타임 상태 변수
 TRADING_STATE = {}
 RE_ENTRY_COOLDOWN = {}
 PROCESSING_STOCKS = set()
@@ -141,19 +124,14 @@ IS_INITIALIZED = False
 last_saved_state_hash = ""
 
 # ---------------------------------------------------------
-# 4. 비동기 헬퍼 함수 (핵심)
+# 4. 비동기 헬퍼 함수
 # ---------------------------------------------------------
 async def run_blocking(func, *args, **kwargs):
-    """
-    동기(Blocking) 함수를 별도 스레드 풀에서 실행하여
-    asyncio 루프가 멈추지 않게 합니다.
-    """
     loop = asyncio.get_running_loop()
     func_call = partial(func, *args, **kwargs)
     return await loop.run_in_executor(None, func_call)
 
 def debug_log(msg):
-    # debug 레벨 로그는 로깅 설정에 따라 출력 여부가 결정됨
     strategy_logger.debug(f"{msg}")
 
 def parse_price(price_str):
@@ -164,28 +142,22 @@ def parse_price(price_str):
         return int(clean_str)
     except ValueError: return 0
 
-# 🌟 [최적화] 조건식 이름 로드 함수 (파일 읽기 최소화)
+# 🌟 [DB 적용] 조건식 이름 로드
 async def load_condition_names():
     global CACHED_CONDITION_NAMES
     try:
-        if await run_blocking(os.path.exists, CONDITIONS_NAME_FILE):
-            def _read_cond_names():
-                with open(CONDITIONS_NAME_FILE, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    return {str(c['id']): c['name'] for c in data.get('conditions', [])}
-            CACHED_CONDITION_NAMES = await run_blocking(_read_cond_names)
-            strategy_logger.info(f"📁 [캐시] 조건식 이름 로드 완료 ({len(CACHED_CONDITION_NAMES)}개)")
+        data = await run_blocking(db.get_kv, "conditions")
+        if data:
+            CACHED_CONDITION_NAMES = {str(c['id']): c['name'] for c in data.get('conditions', [])}
+            strategy_logger.info(f"📁 [DB] 조건식 이름 로드 완료 ({len(CACHED_CONDITION_NAMES)}개)")
     except Exception as e:
         strategy_logger.error(f"조건식 이름 로드 실패: {e}")
 
 # ---------------------------------------------------------
-# 5. 텔레그램 및 리포트 (사진전송 + 리포트 로직 수정)
+# 5. 텔레그램 및 리포트
 # ---------------------------------------------------------
 async def _telegram_worker():
-    """ 텔레그램 메시지(텍스트/사진) 전송 비동기 워커 """
     import requests
-    
-    # 동기식 사진 전송 함수 (스레드 내부 실행용)
     def _send_photo_sync(token, chat_id, photo_path, caption):
         url = f"https://api.telegram.org/bot{token}/sendPhoto"
         with open(photo_path, 'rb') as f:
@@ -200,83 +172,59 @@ async def _telegram_worker():
 
             if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
                 try:
-                    # 1. 텍스트 메시지인 경우
                     if isinstance(item, str):
                         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
                         params = {"chat_id": TELEGRAM_CHAT_ID, "text": item, "parse_mode": "HTML"}
                         await run_blocking(requests.get, url, params=params, timeout=5)
-                    
-                    # 2. 사진 메시지인 경우 (딕셔너리 형태)
                     elif isinstance(item, dict) and item.get('type') == 'photo':
                         path = item.get('path')
                         caption = item.get('caption')
                         if path and os.path.exists(path):
                             await run_blocking(_send_photo_sync, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, path, caption)
-                            # 전송 후 이미지 삭제
                             try: os.remove(path)
                             except: pass
-                            
                 except Exception as e:
                     strategy_logger.error(f"텔레그램 전송 실패: {e}")
-
             TELEGRAM_QUEUE.task_done()
-            await asyncio.sleep(1.0) # Rate Limit 방지
-        except asyncio.CancelledError:
-            break
-        except Exception:
-            await asyncio.sleep(1)
+            await asyncio.sleep(1.0)
+        except asyncio.CancelledError: break
+        except Exception: await asyncio.sleep(1)
 
 def send_telegram_msg(msg):
-    """ 텍스트 메시지를 큐에 넣습니다. """
     if not BOT_SETTINGS.get("USE_TELEGRAM", True): return
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
-    try:
-        TELEGRAM_QUEUE.put_nowait(msg)
+    try: TELEGRAM_QUEUE.put_nowait(msg)
     except Exception: pass
 
 def send_telegram_photo(path, caption):
-    """ 사진 메시지(캡션 포함)를 큐에 넣습니다. """
     if not BOT_SETTINGS.get("USE_TELEGRAM", True): return
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
-    try:
-        TELEGRAM_QUEUE.put_nowait({'type': 'photo', 'path': path, 'caption': caption})
+    try: TELEGRAM_QUEUE.put_nowait({'type': 'photo', 'path': path, 'caption': caption})
     except Exception: pass
 
+# 🌟 [DB 적용] 리포트 생성
 async def send_daily_report():
     try:
         today_str = datetime.now().strftime('%Y-%m-%d')
         server_profit = await run_blocking(fn_ka10074_get_daily_profit)
 
+        trades = await run_blocking(db.get_recent_trades, 1000)
+        
         total_buy_cnt = 0; total_sell_cnt = 0; win_cnt = 0; loss_cnt = 0; log_profit = 0
 
-        if await run_blocking(os.path.exists, TRADES_FILE):
-            def read_log():
-                with open(TRADES_FILE, 'r', encoding='utf-8') as f:
-                    return f.readlines()
-            lines = await run_blocking(read_log)
+        for t in trades:
+            if not t['timestamp'].startswith(today_str): continue
+            action = t['action']
+            if action == "BUY": total_buy_cnt += 1
+            if action == "SELL":
+                total_sell_cnt += 1
+                rate = t['profit_rate']
+                if rate > 0: win_cnt += 1
+                else: loss_cnt += 1
+                log_profit += t['profit_amt']
 
-            for line in lines:
-                if not line.startswith(f"[{today_str}"): continue
-                if "BUY:" in line: total_buy_cnt += 1
-                if "SELL:" in line:
-                    total_sell_cnt += 1
-                    try:
-                        if "수익률: " in line:
-                            parts = line.split("수익률: ")
-                            if len(parts) > 1:
-                                rate = float(parts[1].split('%')[0])
-                                if rate > 0: win_cnt += 1
-                                else: loss_cnt += 1
-                        if "손익금: " in line:
-                            p_parts = line.split("손익금: ")
-                            if len(p_parts) > 1:
-                                log_profit += int(p_parts[1].strip())
-                    except: pass
-
-        # 매매 내역이 없어도 리포트 전송
         final_profit = server_profit if server_profit is not None else log_profit
         source_msg = "(서버 확정)" if server_profit is not None else "(예상 추정치)"
-
         win_rate = (win_cnt / total_sell_cnt * 100) if total_sell_cnt > 0 else 0
         profit_emoji = "🔴" if final_profit > 0 else "🔵"
 
@@ -298,28 +246,34 @@ async def send_daily_report():
     except Exception as e:
         strategy_logger.error(f"리포트 생성 실패: {e}")
 
+# 🌟 [DB 적용] 로그 기록
 async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=0, profit_amt=0, peak_rate=0, image_path=None, ai_reason=None):
     try:
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         price_str = f"{price:,}"
         profit_str = f"{profit_rate:.2f}"
-        
-        # 🌟 [개선] JSONL 포맷으로 저장 (추후 대시보드 호환성 고려)
-        log_msg = f"[{timestamp}] {action}: {stk_nm}({stock_code}), 수량: {qty}, 가격: {price_str}원, 사유: {reason}, 수익률: {profit_str}%, 손익금: {int(profit_amt)}\n"
 
-        def _write_log():
-            with open(TRADES_FILE, 'a', encoding='utf-8') as f: f.write(log_msg)
-        await run_blocking(_write_log)
+        # DB 저장용 데이터
+        trade_data = {
+            "timestamp": timestamp,
+            "action": action,
+            "stock_code": stock_code,
+            "stock_name": stk_nm,
+            "qty": qty,
+            "price": price,
+            "reason": reason,
+            "profit_rate": profit_rate,
+            "profit_amt": int(profit_amt),
+            "image_path": image_path,
+            "ai_reason": ai_reason
+        }
+        await run_blocking(db.log_trade, trade_data)
 
-        # 🌟 [수정] print 대신 logger 사용
         strategy_logger.info(f"📝 [매매기록] {action} {stk_nm} ({profit_str}%) - {reason}")
 
         emoji = "🔴 매수" if action == "BUY" else "🔵 매도"
         tg_msg = f"{emoji} <b>체결 알림</b>"
-        
-        if action == "BUY" and ai_reason:
-            tg_msg += f"\n🤖 <b>AI분석:</b> {ai_reason}"
-            
+        if action == "BUY" and ai_reason: tg_msg += f"\n🤖 <b>AI분석:</b> {ai_reason}"
         tg_msg += f"\n사유: {reason}\n종목: {stk_nm} ({stock_code})\n가격: {price_str}원\n수량: {qty}주"
 
         if action == "SELL":
@@ -328,22 +282,10 @@ async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=
             tg_msg += f"\n💵 손익금: {int(profit_amt):,}원"
             tg_msg += f"\n📈 최고점: {peak_rate:.2f}%"
 
-        # 이미지가 있으면 사진 전송, 없으면 텍스트 전송
-        if image_path:
-            send_telegram_photo(image_path, tg_msg)
-        else:
-            send_telegram_msg(tg_msg)
+        if image_path: send_telegram_photo(image_path, tg_msg)
+        else: send_telegram_msg(tg_msg)
             
     except Exception as e: strategy_logger.error(f"로그 작성 실패: {e}")
-
-    # 🌟 [개선] 로그 파일 보존 기간 확대 (1MB -> 10MB)
-    try:
-        if await run_blocking(os.path.exists, TRADES_FILE):
-             size = await run_blocking(os.path.getsize, TRADES_FILE)
-             if size > 10 * 1024 * 1024: # 10MB
-                backup_name = f"{TRADES_FILE}.{datetime.now().strftime('%Y%m%d%H%M%S')}.bak"
-                await run_blocking(os.rename, TRADES_FILE, backup_name)
-    except Exception: pass
 
 # ---------------------------------------------------------
 # 6. 핵심 로직 및 스케줄러
@@ -351,52 +293,36 @@ async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=
 def is_market_open():
     use_market_time = BOT_SETTINGS.get("USE_MARKET_TIME", True)
     if not use_market_time: return True
-
     try:
         now = datetime.now()
         current_time = now.time()
-        
         start_time = datetime.strptime("09:00:00", "%H:%M:%S").time()
         end_time = datetime.strptime("15:20:00", "%H:%M:%S").time() 
         
-        if current_time < start_time or current_time > end_time:
-            return False
+        if current_time < start_time or current_time > end_time: return False
 
         xkrx = xcals.get_calendar("XKRX")
-        if not xkrx.is_session(now.strftime("%Y-%m-%d")):
-            return False
-
+        if not xkrx.is_session(now.strftime("%Y-%m-%d")): return False
         return True
-
     except Exception as e:
-        strategy_logger.error(f"장 운영 시간 확인 중 오류: {e}")
         if now.weekday() < 5:
             start = datetime.strptime("09:00:00", "%H:%M:%S").time()
             end = datetime.strptime("15:20:00", "%H:%M:%S").time()
             return start <= current_time <= end
         return False
 
-# 🌟 [수정] 차트 패턴 정밀 분석 함수 (condition_id 인자 추가 및 전달)
 async def analyze_chart_pattern(stock_code, condition_id="0"):
-    """
-    Returns: (is_good, image_path, reason)
-    """
     try:
         chart_data = await run_blocking(fn_ka10080_get_minute_chart, stock_code, tick="3")
-        
-        if not chart_data or len(chart_data) < 20:
-            return True, None, None
+        if not chart_data or len(chart_data) < 20: return True, None, None
 
-        # [Step 1] 수식 기반 필터링
         last_candle = chart_data[1] 
         open_p = abs(int(last_candle.get('open_pric', 0)))
         close_p = abs(int(last_candle.get('cur_prc', 0)))
         high_p = abs(int(last_candle.get('high_pric', 0)))
         low_p = abs(int(last_candle.get('low_pric', 0)))
         
-        if open_p == 0:
-            strategy_logger.warning(f"⚠️ 차트 데이터 필드 오류 ({stock_code})")
-            return True, None, None
+        if open_p == 0: return True, None, None
 
         total_len = high_p - low_p
         upper_shadow = high_p - close_p if close_p > open_p else high_p - open_p
@@ -405,14 +331,11 @@ async def analyze_chart_pattern(stock_code, condition_id="0"):
             strategy_logger.info(f"🛡️ [1차필터] {stock_code}: 윗꼬리 과다 -> 진입 포기")
             return False, None, "1차필터(윗꼬리) 탈락"
 
-        # [Step 2] AI 시각 분석
         stk_nm = "Stock"
         image_path = await run_blocking(create_chart_image, stock_code, stk_nm, chart_data)
         
         if image_path:
-            # 🌟 [수정] condition_id를 함께 전달
             is_buy, reason = await run_blocking(ask_ai_to_buy, image_path, condition_id)
-            
             if is_buy:
                 strategy_logger.info(f"🤖 [AI승인] {stock_code}: 매수 추천! ({reason})")
                 return True, image_path, reason
@@ -423,7 +346,6 @@ async def analyze_chart_pattern(stock_code, condition_id="0"):
                 return False, None, reason
         
         return True, None, None
-
     except Exception as e:
         strategy_logger.error(f"차트 분석 중 오류 ({stock_code}): {e}")
         return True, None, None
@@ -432,7 +354,6 @@ async def apply_condition_preset(target_id):
     if target_id in STRATEGY_PRESETS:
         preset = STRATEGY_PRESETS[target_id]
         changed_msg = []
-
         for key, val in preset.items():
             if key == "DESC": continue
             if key in BOT_SETTINGS and BOT_SETTINGS[key] != val:
@@ -440,9 +361,6 @@ async def apply_condition_preset(target_id):
                 changed_msg.append(f"{key}: {val}")
 
         strategy_logger.info(f"🎨 [전략변경] 조건식 {target_id}번({preset['DESC']}) 설정 적용됨.")
-        if changed_msg:
-            debug_log(f"변경된 상세 설정: {', '.join(changed_msg)}")
-
         await save_settings_to_file()
         return True
     return False
@@ -486,40 +404,27 @@ async def check_auto_condition_change():
     return False
 
 async def run_self_diagnosis():
-    # 🌟 [수정] print -> logger
-    strategy_logger.info("========================================")
     strategy_logger.info("🩺 시스템 자가 진단 (Self Diagnosis)")
-    strategy_logger.info("========================================")
     try:
-        test_file = os.path.join(DATA_DIR, "write_test.tmp")
-        def _file_test():
-            with open(test_file, "w") as f: f.write("test")
-            os.remove(test_file)
-        await run_blocking(_file_test)
-        strategy_logger.info("✅ [파일시스템] /data 디렉토리 쓰기 권한 OK")
+        # DB 연결 테스트
+        await run_blocking(db.get_kv, "test_key")
+        strategy_logger.info("✅ [DB] SQLite 연결 정상")
     except Exception as e:
-        strategy_logger.error(f"❌ [파일시스템] 쓰기 권한 오류! ({e})")
-
-    if not await run_blocking(os.path.exists, SETTINGS_FILE):
-        strategy_logger.warning("⚠️ [설정] 설정 파일이 없어 기본값을 생성합니다.")
+        strategy_logger.error(f"❌ [DB] 연결 오류! ({e})")
+        
+    settings = await run_blocking(db.get_kv, "settings")
+    if not settings:
+        strategy_logger.warning("⚠️ [설정] DB에 설정이 없어 기본값을 저장합니다.")
         await save_settings_to_file()
-    strategy_logger.info("========================================\n")
 
 async def set_booting_status(status_msg="BOOTING", target_mode=None):
     try:
-        await run_blocking(os.makedirs, os.path.dirname(STATUS_FILE), exist_ok=True)
         now = datetime.now()
         is_mock = MOCK_TRADE if target_mode is None else target_mode
+        
         old_trading_state = {}
-
-        if await run_blocking(os.path.exists, STATUS_FILE):
-            try:
-                def _read():
-                    with open(STATUS_FILE, 'r', encoding='utf-8') as f:
-                        return json.load(f)
-                old_data = await run_blocking(_read)
-                old_trading_state = old_data.get('trading_state', {})
-            except: pass
+        old_data = await run_blocking(db.get_kv, "status")
+        if old_data: old_trading_state = old_data.get('trading_state', {})
 
         status_data = {
             "bot_status": status_msg,
@@ -529,30 +434,20 @@ async def set_booting_status(status_msg="BOOTING", target_mode=None):
             "trading_state": old_trading_state,
             "is_offline": False
         }
-
-        def _write(data):
-            temp_file = f"{STATUS_FILE}.tmp"
-            with open(temp_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=4)
-            os.replace(temp_file, STATUS_FILE)
-        await run_blocking(_write, status_data)
+        await run_blocking(db.set_kv, "status", status_data)
     except Exception as e:
         strategy_logger.error(f"⚠️ 부팅 상태 저장 실패: {e}")
 
+# 🌟 [DB 적용] 설정 로드
 async def load_settings_from_file():
     global BOT_SETTINGS
     try:
-        def _read_settings():
-            if os.path.exists(SETTINGS_FILE):
-                with open(SETTINGS_FILE, 'r', encoding='utf-8') as f: return json.load(f)
-            else:
-                new_settings = DEFAULT_SETTINGS.copy()
-                with open(SETTINGS_FILE, 'w', encoding='utf-8') as f: json.dump(new_settings, f, ensure_ascii=False, indent=4)
-                return new_settings
+        saved_settings = await run_blocking(db.get_kv, "settings")
+        if not saved_settings:
+            saved_settings = DEFAULT_SETTINGS.copy()
+            await run_blocking(db.set_kv, "settings", saved_settings)
 
-        new_settings = await run_blocking(_read_settings)
-        saved_mock_mode = new_settings.get("MOCK_TRADE")
-
+        saved_mock_mode = saved_settings.get("MOCK_TRADE")
         if saved_mock_mode is not None and saved_mock_mode != MOCK_TRADE:
             strategy_logger.warning(f"⚠️ 투자 모드 변경 감지. 재시작합니다...")
             await set_booting_status("RESTARTING", target_mode=saved_mock_mode)
@@ -560,7 +455,7 @@ async def load_settings_from_file():
             sys.exit(0)
 
         current_cond_id = str(BOT_SETTINGS.get("CONDITION_ID") or "0")
-        new_cond_id = str(new_settings.get("CONDITION_ID"))
+        new_cond_id = str(saved_settings.get("CONDITION_ID"))
 
         if current_cond_id != new_cond_id and new_cond_id is not None:
              strategy_logger.warning(f"조건검색식 변경 감지 (수동) ({current_cond_id} -> {new_cond_id}).")
@@ -568,10 +463,10 @@ async def load_settings_from_file():
              if new_cond_id in STRATEGY_PRESETS:
                  preset = STRATEGY_PRESETS[new_cond_id]
                  for k, v in preset.items():
-                     if k != "DESC": new_settings[k] = v
+                     if k != "DESC": saved_settings[k] = v
 
         for key, default_val in DEFAULT_SETTINGS.items():
-            val = new_settings.get(key)
+            val = saved_settings.get(key)
             if key == "CONDITION_ID": val = str(val) if (val is not None and val != "") else "0"
             elif key == "USE_MARKET_TIME": val = bool(val) if val is not None else True
             if key in ["MORNING_START", "MORNING_COND", "LUNCH_START", "LUNCH_COND", "AFTERNOON_START", "AFTERNOON_COND", "OVERNIGHT_COND_IDS"]:
@@ -579,16 +474,11 @@ async def load_settings_from_file():
             else:
                  BOT_SETTINGS[key] = val if val is not None else default_val
 
-        # 🌟 로깅 설정 업데이트 (여기서는 API 디버그 레벨만 설정, 전체 포맷팅은 setup_logging에서)
         debug_val = BOT_SETTINGS.get("DEBUG_MODE", False)
-        # 로거 레벨 조정
         new_level = logging.DEBUG if debug_val else logging.INFO
         strategy_logger.setLevel(new_level)
-        
         if ws_manager: ws_manager.set_debug_mode(debug_val)
         set_api_debug_mode(debug_val)
-
-        # 🌟 중요: 설정 로드 시마다 메인 로거 포맷도 업데이트 (사용자가 GUI에서 디버그 껐다 켰다 할 수 있으므로)
         setup_logging(debug_val)
 
         if current_cond_id != new_cond_id:
@@ -601,11 +491,10 @@ async def load_settings_from_file():
         BOT_SETTINGS = DEFAULT_SETTINGS.copy()
 
 async def save_settings_to_file():
-    def _write():
-        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f: json.dump(BOT_SETTINGS, f, ensure_ascii=False, indent=4)
-    try: await run_blocking(_write)
+    try: await run_blocking(db.set_kv, "settings", BOT_SETTINGS)
     except: pass
 
+# 🌟 [DB 적용] 상태 저장
 async def save_status_to_file(force=False):
     global last_heartbeat_time, TRADING_STATE, BOT_SETTINGS, IS_INITIALIZED, RE_ENTRY_COOLDOWN, last_saved_state_hash, TODAY_REALIZED_PROFIT
     if not IS_INITIALIZED: return
@@ -615,14 +504,13 @@ async def save_status_to_file(force=False):
     last_heartbeat_time = now
 
     try:
-        await run_blocking(os.makedirs, os.path.dirname(STATUS_FILE), exist_ok=True)
         bot_status = BOT_SETTINGS.get("BOT_STATUS") or "STOPPED"
         display_status = bot_status
         if bot_status == "RUNNING" and not is_market_open():
             display_status = "SLEEPING"
 
         enriched_state = {}
-        total_buy_amt = 0; total_eval_amt = 0; total_profit_amt = 0
+        total_buy_amt = 0; total_eval_amt = 0; 
 
         for code, info in TRADING_STATE.items():
             info_copy = info.copy()
@@ -648,9 +536,7 @@ async def save_status_to_file(force=False):
                     total_eval_amt += item_eval_amt
 
         total_profit_amt = total_eval_amt - total_buy_amt
-        total_profit_rate = 0.0
-        if total_buy_amt > 0:
-            total_profit_rate = (total_profit_amt / total_buy_amt) * 100
+        total_profit_rate = (total_profit_amt / total_buy_amt * 100) if total_buy_amt > 0 else 0.0
 
         account_summary = {
             "total_buy": int(total_buy_amt),
@@ -678,18 +564,13 @@ async def save_status_to_file(force=False):
         current_hash = hashlib.md5(json.dumps(status_data, sort_keys=True).encode()).hexdigest()
         if not force and current_hash == last_saved_state_hash: return
 
-        def _write(data):
-            temp_file = f"{STATUS_FILE}.tmp"
-            with open(temp_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=4)
-            os.replace(temp_file, STATUS_FILE)
-        await run_blocking(_write, status_data)
+        await run_blocking(db.set_kv, "status", status_data)
         last_saved_state_hash = current_hash
 
     except Exception: pass
 
 # ---------------------------------------------------------
-# 7. 매매 및 주문 실행 로직 (비동기화)
+# 7. 매매 및 주문 실행 로직
 # ---------------------------------------------------------
 async def _load_initial_balance():
     global TRADING_STATE, IS_INITIALIZED, RE_ENTRY_COOLDOWN
@@ -698,12 +579,9 @@ async def _load_initial_balance():
     old_condition_map = {}
     RE_ENTRY_COOLDOWN = {}
 
-    if await run_blocking(os.path.exists, STATUS_FILE):
-        try:
-            def _read_status():
-                with open(STATUS_FILE, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            old_data = await run_blocking(_read_status)
+    try:
+        old_data = await run_blocking(db.get_kv, "status")
+        if old_data:
             for code, info in old_data.get('trading_state', {}).items():
                 if info.get('condition_from') and info['condition_from'] != "기존보유":
                     old_condition_map[code] = info['condition_from']
@@ -714,7 +592,7 @@ async def _load_initial_balance():
                     t = datetime.strptime(t_str, '%Y-%m-%d %H:%M:%S')
                     if t > now: RE_ENTRY_COOLDOWN[code] = t
                 except: pass
-        except Exception: pass
+    except Exception: pass
 
     initial_stocks = []
     initial_balance = None
@@ -809,8 +687,7 @@ async def sync_balance_with_server():
             if is_market_opening and "매도" not in status:
                 strategy_logger.warning(f"🛡️ [잔고보호] 장시작 폭주로 인한 잔고 누락 추정. 삭제 유예: {code}")
                 continue
-            if not is_daytime_safe and "매도" not in status:
-                 continue
+            if not is_daytime_safe and "매도" not in status: continue
 
             if status == '매수주문':
                 if (datetime.now() - state.get('order_time', datetime.now())).total_seconds() > 300:
@@ -829,7 +706,6 @@ async def _sync_initial_condition_list():
     cond_id = str(BOT_SETTINGS.get('CONDITION_ID') or "0")
     if ws_manager: ws_manager.request_condition_snapshot(cond_id)
 
-# 🌟 [신규] 개별 종목 처리 로직 분리 (비동기 병렬 실행용)
 async def process_single_stock_signal(stock_code, event_type, condition_id, condition_names, initial_price=None):
     global TRADING_STATE, PROCESSING_STOCKS, PENDING_ORDER_CONDITIONS, BUY_ATTEMPT_HISTORY
     
@@ -844,25 +720,20 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
         try:
             strategy_logger.info(f"🔔 [조건포착] {stk_name} ({stock_code}) 분석 시작")
             
-            # 1. 가격 정보 조회 (API 호출 절약 로직)
             stock_info = None
             current_price = 0
             
-            # 🌟 WebSocket에서 받은 가격이 있으면 API 호출 생략 (Breakthrough!)
             if initial_price and initial_price > 0:
                 current_price = initial_price
-                # 종목명만 빠르게 확인 (캐시 사용 권장되지만, 여기선 간단히)
-                if stk_name == stock_code: # 종목명이 코드와 같으면(모르면) 조회
+                if stk_name == stock_code: 
                     await GLOBAL_API_LIMITER.wait()
                     stock_info = await run_blocking(fn_ka10001_get_stock_info, stock_code)
                     if stock_info: stk_nm = stock_info.get('종목명', stock_code)
-                else:
-                    stk_nm = stk_name
+                else: stk_nm = stk_name
                 debug_log(f"⚡ [Speed] {stk_nm}: 웹소켓 가격({current_price}) 사용 -> API 생략")
             else:
-                # 가격 정보가 없으면 API 호출 (Rate Limit 적용)
                 for attempt in range(3):
-                    await GLOBAL_API_LIMITER.wait() # 🚦 신호 대기
+                    await GLOBAL_API_LIMITER.wait()
                     stock_info = await run_blocking(fn_ka10001_get_stock_info, stock_code)
                     if stock_info:
                         current_price = abs(stock_info.get('현재가', 0))
@@ -875,9 +746,8 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                 strategy_logger.warning(f"❌ {stk_nm}({stock_code}) 가격 정보 없음. 스킵.")
                 return
 
-            # 2. 호가 필터 (Rate Limit 적용)
             if use_hoga_filter:
-                await GLOBAL_API_LIMITER.wait() # 🚦 신호 대기
+                await GLOBAL_API_LIMITER.wait()
                 hoga_data = await run_blocking(fn_ka10004_get_hoga, stock_code)
                 if hoga_data:
                     buy_total = hoga_data['buy_total']
@@ -890,17 +760,13 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                     else: return
                 else: return
 
-            # 3. 차트 & AI 분석 (Rate Limit 적용 - 차트 조회)
-            # 차트 조회는 무겁기 때문에 반드시 제한 필요
-            await GLOBAL_API_LIMITER.wait() # 🚦 신호 대기
-            # 🌟 [수정] condition_id를 함께 전달
+            await GLOBAL_API_LIMITER.wait()
             is_good_chart, image_path, ai_reason = await analyze_chart_pattern(stock_code, condition_id)
             
             if not is_good_chart:
                 RE_ENTRY_COOLDOWN[stock_code] = datetime.now() + timedelta(minutes=10)
                 return
 
-            # 4. 주문 실행 (주문은 Rate Limit 예외 - 즉시 실행)
             buy_qty = int((order_amount * 0.95) // current_price)
             if buy_qty == 0:
                 if image_path:
@@ -947,12 +813,9 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
 
 
 async def check_for_new_stocks():
-    global TRADING_STATE, PROCESSING_STOCKS, PENDING_ORDER_CONDITIONS, BUY_ATTEMPT_HISTORY
-    global CACHED_CONDITION_NAMES # [최적화] 전역 캐시 사용
+    global TRADING_STATE, PROCESSING_STOCKS, PENDING_ORDER_CONDITIONS, BUY_ATTEMPT_HISTORY, CACHED_CONDITION_NAMES
 
     condition_id = str(BOT_SETTINGS.get('CONDITION_ID') or "0")
-    
-    # [최적화] 파일 매번 읽지 않고 캐시 사용
     condition_names = CACHED_CONDITION_NAMES
 
     while True:
@@ -961,15 +824,12 @@ async def check_for_new_stocks():
 
         stock_code = event.get('stock_code', '').strip('AJ')
         if event.get('type') != 'I': continue
-        
-        # 🌟 WebSocket에서 추출한 가격 정보 가져오기
         initial_price = event.get('price')
 
         if stock_code in TRADING_STATE: continue
         if stock_code in PROCESSING_STOCKS: continue
         if stock_code in RE_ENTRY_COOLDOWN:
-            if datetime.now() < RE_ENTRY_COOLDOWN[stock_code]:
-                continue
+            if datetime.now() < RE_ENTRY_COOLDOWN[stock_code]: continue
             else: del RE_ENTRY_COOLDOWN[stock_code]
 
         if stock_code in BUY_ATTEMPT_HISTORY:
@@ -978,10 +838,7 @@ async def check_for_new_stocks():
             else: del BUY_ATTEMPT_HISTORY[stock_code]
 
         PROCESSING_STOCKS.add(stock_code)
-        
-        # 🌟 가격 정보(initial_price)를 함께 전달
         asyncio.create_task(process_single_stock_signal(stock_code, "I", condition_id, condition_names, initial_price))
-        
         await asyncio.sleep(0.01)
 
 async def try_market_close_liquidation():
@@ -1019,8 +876,7 @@ async def try_morning_liquidation():
         OVERNIGHT_CONDITION_IDS = [x.strip() for x in raw_ids.split(',') if x.strip()]
 
         for stock_code, state in list(TRADING_STATE.items()):
-            if "매도" in state.get('status', '') or state.get('trailing_active', False):
-                continue
+            if "매도" in state.get('status', '') or state.get('trailing_active', False): continue
             cond_info = state.get('condition_from', '')
             cond_id = cond_info.split(':')[0] if ':' in cond_info else '999'
 
@@ -1220,36 +1076,20 @@ async def _handle_realtime_account(account_data_type):
                 del TRADING_STATE[stock_code]
                 await save_status_to_file(force=True)
 
-# 🌟 [수정] 통합 로깅 설정 함수
 def setup_logging(debug_mode=False):
-    """
-    모든 로거의 포맷과 레벨을 제어하는 중앙 설정 함수
-    debug_mode=True: 파일명, 줄번호 등 상세 출력
-    debug_mode=False: 시간, 메시지 등 필수 정보만 출력
-    """
-    # 루트 로거 가져오기
     logger = logging.getLogger()
-    
-    # 기존 핸들러 제거 (중복 방지)
-    if logger.hasHandlers():
-        logger.handlers.clear()
+    if logger.hasHandlers(): logger.handlers.clear()
 
-    # 1. 콘솔 핸들러 설정
     stream_handler = logging.StreamHandler(sys.stdout)
-    
     if debug_mode:
-        # [디버그 모드] 상세 정보 표시
         logger.setLevel(logging.DEBUG)
         console_formatter = logging.Formatter('[%(asctime)s] [%(levelname)s] %(filename)s:%(lineno)d - %(message)s')
     else:
-        # [운영 모드] 깔끔하게 표시 (INFO 이상)
         logger.setLevel(logging.INFO)
         console_formatter = logging.Formatter('[%(asctime)s] %(message)s', datefmt='%H:%M:%S')
-        
     stream_handler.setFormatter(console_formatter)
     logger.addHandler(stream_handler)
 
-    # 2. 파일 핸들러 설정 (파일은 항상 상세하게 남김)
     log_dir = "/data/logs"
     os.makedirs(log_dir, exist_ok=True)
     file_handler = TimedRotatingFileHandler(
@@ -1260,13 +1100,12 @@ def setup_logging(debug_mode=False):
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
 
-    # 3. 외부 라이브러리 로그 레벨 조정 (너무 시끄러운 것들)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("websockets").setLevel(logging.WARNING)
     logging.getLogger("asyncio").setLevel(logging.WARNING)
 
 # ---------------------------------------------------------
-# 8. 메인 실행부 (asyncio)
+# 8. 메인 실행부
 # ---------------------------------------------------------
 async def main():
     global ws_manager, BOT_SETTINGS, TRADING_STATE
@@ -1285,21 +1124,16 @@ async def main():
         signal.signal(signal.SIGINT, lambda s, f: _handle_exit())
         signal.signal(signal.SIGTERM, lambda s, f: _handle_exit())
 
-    # 1. 초기 로깅 설정 (기본값)
     setup_logging(debug_mode=False)
-    
-    # 🌟 [수정] 로깅 설정 후 AI 클라이언트 초기화 호출 (로그 누락 방지)
     init_ai_clients()
 
     telegram_task = asyncio.create_task(_telegram_worker())
 
     await run_self_diagnosis()
     await set_booting_status("BOOTING", target_mode=MOCK_TRADE)
-    await run_blocking(create_master_stock_file)
+    await run_blocking(create_master_stock_file) # DB 저장 방식으로 변경 필요
 
     BOT_SETTINGS = DEFAULT_SETTINGS.copy()
-    
-    # 2. 설정 파일 로드 및 로깅 모드 재설정 (여기서 DEBUG_MODE 적용됨)
     await load_settings_from_file()
 
     if MOCK_TRADE:
@@ -1309,7 +1143,6 @@ async def main():
     else:
         mode_log = "🚨 [투자모드] 실전투자 (REAL TRADING)"
         strategy_logger.warning(f"🔥 경고: 현재 '실전 투자' 모드입니다! 🔥")
-        strategy_logger.warning(f"🚀 {mode_log} - 주의: 실제 자금이 운용됩니다.")
         send_telegram_msg(f"🔥 [경고] 실전투자 모드로 봇이 시작되었습니다!")
 
     if BOT_SETTINGS.get("BOT_STATUS") == "RESTARTING":
@@ -1324,8 +1157,6 @@ async def main():
 
     await asyncio.sleep(5)
     await _sync_initial_condition_list()
-
-    # 🌟 [신규] 봇 시작 시 조건식 이름 목록 한 번만 로드 (병목 제거)
     await load_condition_names()
 
     strategy_logger.info("🚀 [메인 루프 시작] 비동기 봇이 정상적으로 실행되었습니다.")
@@ -1339,45 +1170,24 @@ async def main():
 
     while not stop_event.is_set():
         try:
-            # 1. 백테스팅 요청 확인
-            backtest_req_file = os.path.join(DATA_DIR, "backtest_req.json")
-            if await run_blocking(os.path.exists, backtest_req_file):
-                try:
-                    def _read_bt_req():
-                        with open(backtest_req_file, 'r', encoding='utf-8') as f: return f.read().strip()
-                    content = await run_blocking(_read_bt_req)
-
-                    if content:
-                        req_data = json.loads(content)
-                        try: await run_blocking(os.remove, backtest_req_file)
-                        except: pass
-                        strategy_logger.info("📊 백테스팅 요청 감지! 시뮬레이션 시작...")
-
-                        def run_bt(signals, settings):
-                            try:
-                                results = run_simulation_for_list(signals, settings)
-                                res_file = os.path.join(DATA_DIR, "backtest_res.json")
-                                with open(res_file, 'w', encoding='utf-8') as f:
-                                    json.dump(results, f, ensure_ascii=False)
-                            except Exception as e:
-                                strategy_logger.error(f"백테스팅 오류: {e}")
-
-                        await run_blocking(run_bt, req_data.get('signals', []), BOT_SETTINGS)
-                except Exception as e:
-                    try: await run_blocking(os.remove, backtest_req_file)
-                    except: pass
-
-            # 2. 일괄 매도 요청
-            bulk_sell_file = os.path.join(DATA_DIR, "bulk_sell_req.json")
-            if await run_blocking(os.path.exists, bulk_sell_file):
-                try:
+            # 🌟 [DB 적용] 명령 큐 확인
+            command = await run_blocking(db.pop_command)
+            if command:
+                if command['cmd_type'] == 'BULK_SELL':
                     await process_bulk_sell()
-                except Exception as e: strategy_logger.error(f"일괄 청산 오류: {e}")
-                finally:
-                    try: await run_blocking(os.remove, bulk_sell_file)
-                    except: pass
+                elif command['cmd_type'] == 'BACKTEST_REQ':
+                    try:
+                        payload = json.loads(command['payload'])
+                        strategy_logger.info("📊 백테스팅 요청 감지! 시뮬레이션 시작...")
+                        
+                        def run_bt(signals, settings):
+                            results = run_simulation_for_list(signals, settings)
+                            db.set_kv("backtest_result", results) # DB 저장
+                        
+                        await run_blocking(run_bt, payload.get('signals', []), BOT_SETTINGS)
+                    except Exception as e:
+                         strategy_logger.error(f"백테스팅 오류: {e}")
 
-            # 3. 설정 및 상태
             await load_settings_from_file()
             bot_status = BOT_SETTINGS.get("BOT_STATUS", "STOPPED")
 
@@ -1385,13 +1195,10 @@ async def main():
                 await save_status_to_file(force=True)
                 last_force_save = datetime.now()
 
-            # 🌟 [수정] 리포트 발송 로직을 이곳으로 이동 (상태와 무관하게 실행) 🌟
             try:
-                # 15시 40분 이후라면 리포트 체크
                 if (datetime.now().hour == 15 and datetime.now().minute >= 40) or (datetime.now().hour > 15):
                     current_date_str = datetime.now().strftime('%Y-%m-%d')
                     if last_report_date != current_date_str:
-                        # 주말/공휴일 제외 로직이 필요하다면 여기에 추가 가능 (현재는 매일 체크)
                         await send_daily_report()
                         last_report_date = current_date_str
             except Exception as e:
