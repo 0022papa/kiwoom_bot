@@ -41,6 +41,13 @@
         .toggle-checkbox:checked { right: 0; border-color: #3b82f6; }
         .toggle-checkbox:checked + .toggle-label { background-color: #3b82f6; }
         .toggle-checkbox { right: calc(100% - 1.5rem); transition: all 0.3s; top: 0; border-color: #e2e8f0;}
+
+        /* 시스템 로그 스타일 */
+        .log-entry { font-family: 'Menlo', 'Monaco', 'Courier New', monospace; font-size: 0.8rem; border-bottom: 1px solid #333; padding: 2px 0; }
+        .log-INFO { color: #d4d4d4; }
+        .log-WARNING { color: #dcdcaa; }
+        .log-ERROR { color: #f44747; font-weight: bold; }
+        .log-DEBUG { color: #6a9955; }
     </style>
 </head>
 <body class="bg-slate-100 dark:bg-slate-900 text-slate-900 dark:text-slate-100 min-h-screen transition-colors duration-200">
@@ -296,15 +303,23 @@
             </div>
 
             <div class="p-6 bg-white dark:bg-slate-800 rounded-2xl shadow-lg border border-slate-200 dark:border-slate-700 lg:col-span-3 xl:col-span-4 transition-colors">
-                <div class="flex justify-between items-center mb-4">
-                    <h2 class="text-xl font-bold flex items-center gap-2 text-slate-800 dark:text-slate-100">
-                        매매 기록 <span class="text-sm font-normal text-slate-500">(최근 <span id="trade-count">0</span>건)</span>
-                    </h2>
+                
+                <div class="flex justify-between items-center mb-4 border-b border-slate-200 dark:border-slate-700 pb-2">
+                    <div class="flex space-x-6">
+                        <button id="tab-btn-trades" onclick="switchTab('trades')" class="text-xl font-bold flex items-center gap-2 text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400 pb-2 transition-colors">
+                            매매 기록 <span class="text-sm font-normal text-slate-500">(최근 <span id="trade-count">0</span>건)</span>
+                        </button>
+                        <button id="tab-btn-logs" onclick="switchTab('logs')" class="text-xl font-bold flex items-center gap-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 pb-2 transition-colors">
+                            시스템 로그
+                        </button>
+                    </div>
+                    
                     <button id="refresh-trades-btn" class="p-2 text-slate-400 hover:text-blue-500 dark:hover:text-blue-400 bg-transparent hover:bg-slate-100 dark:hover:bg-slate-700 rounded-full transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-blue-500" title="새로고침">
                         <svg id="refresh-icon" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
                     </button>
                 </div>
-                <div id="trades-log-container" class="w-full h-80 overflow-y-auto border border-slate-200 dark:border-slate-700 rounded-lg">
+
+                <div id="tab-content-trades" class="w-full h-80 overflow-y-auto border border-slate-200 dark:border-slate-700 rounded-lg">
                     <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700 relative">
                         <thead class="hidden"><tr><th></th></tr></thead>
                         <tbody id="trades-table-body" class="divide-y divide-slate-200 dark:divide-slate-700 bg-white dark:bg-slate-800 transition-colors">
@@ -312,13 +327,51 @@
                         </tbody>
                     </table>
                 </div>
+
+                <div id="tab-content-logs" class="hidden w-full h-80 overflow-y-auto border border-slate-200 dark:border-slate-700 rounded-lg bg-[#1e1e1e] p-4 font-mono text-sm text-[#d4d4d4]">
+                    <div id="system-log-container" class="space-y-1">
+                        <div class="text-center text-gray-500 mt-10">로그 데이터를 불러오는 중...</div>
+                    </div>
+                </div>
+
             </div>
         </div> 
     </div>
 
     <script>
-        // ... (기존 변수 및 함수 유지) ...
-        // 🌟 [수정] 아래 함수들을 LUNCH_START, LUNCH_COND 처리를 위해 업데이트함
+        // ... (기존 유틸리티 함수 등 유지) ...
+        const formatNum = (num) => new Intl.NumberFormat('ko-KR').format(num);
+        const formatRate = (rate) => {
+            const num = parseFloat(rate).toFixed(2);
+            const twColor = num > 0 ? 'text-red-500' : (num < 0 ? 'text-blue-500' : 'text-slate-800 dark:text-slate-200');
+            return `<span class="${twColor} font-bold">${num}%</span>`;
+        };
+
+        // --- 탭 전환 함수 ---
+        let currentTab = 'trades';
+        function switchTab(tabName) {
+            currentTab = tabName;
+            const tradesBtn = document.getElementById('tab-btn-trades');
+            const logsBtn = document.getElementById('tab-btn-logs');
+            const tradesContent = document.getElementById('tab-content-trades');
+            const logsContent = document.getElementById('tab-content-logs');
+
+            const activeClass = "text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400 text-slate-800 dark:text-slate-100";
+            const inactiveClass = "text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 border-b-0";
+
+            if (tabName === 'trades') {
+                tradesBtn.className = `text-xl font-bold flex items-center gap-2 pb-2 transition-colors ${activeClass}`;
+                logsBtn.className = `text-xl font-bold flex items-center gap-2 pb-2 transition-colors ${inactiveClass}`;
+                tradesContent.classList.remove('hidden');
+                logsContent.classList.add('hidden');
+            } else {
+                logsBtn.className = `text-xl font-bold flex items-center gap-2 pb-2 transition-colors ${activeClass}`;
+                tradesBtn.className = `text-xl font-bold flex items-center gap-2 pb-2 transition-colors ${inactiveClass}`;
+                logsContent.classList.remove('hidden');
+                tradesContent.classList.add('hidden');
+                loadSystemLogs(); // 탭 전환 시 로그 로드
+            }
+        }
 
         async function requestBulkSell() {
             if (!confirm("🚨 정말로 모든 보유 종목을 시장가로 매도하시겠습니까?\n(이 작업은 되돌릴 수 없습니다!)")) {
@@ -379,7 +432,7 @@
         const detectedCount = document.getElementById('detected-count');
         const totalProfitVal = document.getElementById('total-profit-val');
         const totalRateVal = document.getElementById('total-rate-val');
-        const realizedProfitVal = document.getElementById('realized-profit-val'); // 🌟 추가
+        const realizedProfitVal = document.getElementById('realized-profit-val'); 
 
         let lastTradeCount = -1; 
         
@@ -414,8 +467,7 @@
                     statusText.textContent = "⛔ 연결 끊김";
                     statusText.className = "font-bold text-2xl tracking-tight text-slate-500 dark:text-slate-400";
                     statusSubtext.textContent = `마지막 응답: ${lastSyncAgo}초 전`;
-                    
-                    if(summaryStatus) summaryStatus.innerHTML = '<span class="text-slate-500 font-bold">⛔ OFFLINE</span> <span class="text-xs text-red-400">(설정: ON)</span>';
+                    if(summaryStatus) summaryStatus.innerHTML = '<span class="text-slate-500 font-bold">⛔ OFFLINE</span>';
                 
                 } else if (status === 'SLEEPING') {
                     statusContainer.className = "flex flex-col items-center justify-center p-6 bg-purple-50 dark:bg-purple-900/20 rounded-xl transition-all duration-300 border-2 border-purple-200 dark:border-purple-800";
@@ -423,7 +475,6 @@
                     statusText.textContent = "🌙 장 마감 대기";
                     statusText.className = "font-bold text-2xl tracking-tight text-purple-600 dark:text-purple-400";
                     statusSubtext.textContent = "봇이 휴식 중입니다 (매도 감시 중)";
-                    
                     if(summaryStatus) summaryStatus.innerHTML = '<span class="text-purple-600 font-bold">🌙 대기 모드</span>';
 
                 } else if (status === 'RUNNING') {
@@ -432,7 +483,6 @@
                     statusText.textContent = "⚡ 가동 중";
                     statusText.className = "font-bold text-2xl tracking-tight text-green-600 dark:text-green-400";
                     statusSubtext.textContent = "실시간 매매 감시 중입니다";
-                    
                     if(summaryStatus) summaryStatus.innerHTML = '<span class="text-green-600 font-bold">⚡ 가동 중</span>';
 
                 } else {
@@ -441,7 +491,6 @@
                     statusText.textContent = "⏸ 대기 중";
                     statusText.className = "font-bold text-2xl tracking-tight text-yellow-600 dark:text-yellow-400";
                     statusSubtext.textContent = "매수가 중지되었습니다";
-                    
                     if(summaryStatus) summaryStatus.innerHTML = '<span class="text-yellow-500 font-bold">⏸ 정지됨</span>';
                 }
 
@@ -458,15 +507,12 @@
                 
                 if (data.account_summary) {
                     const sum = data.account_summary;
-                    
-                    // 🌟 실현손익 업데이트
                     const rp = sum.realized_profit || 0;
                     const rpClass = rp > 0 ? 'text-red-500' : (rp < 0 ? 'text-blue-500' : 'text-slate-500');
                     realizedProfitVal.textContent = rp.toLocaleString() + '원';
                     realizedProfitVal.className = `text-xs font-bold font-mono ${rpClass}`;
 
                     const profitClass = sum.total_profit > 0 ? 'text-red-500' : (sum.total_profit < 0 ? 'text-blue-500' : 'text-slate-500');
-                    
                     totalProfitVal.textContent = sum.total_profit.toLocaleString() + '원';
                     totalProfitVal.className = `text-xs font-bold font-mono ${profitClass}`;
                     
@@ -600,7 +646,7 @@
             const data = await fetchAPI('/api/conditions');
             const selectEl = document.getElementById('CONDITION_ID');
             const morningSelect = document.getElementById('MORNING_COND');
-            const lunchSelect = document.getElementById('LUNCH_COND'); // 점심 추가
+            const lunchSelect = document.getElementById('LUNCH_COND');
             const afternoonSelect = document.getElementById('AFTERNOON_COND');
             
             [selectEl, morningSelect, lunchSelect, afternoonSelect].forEach(el => el.innerHTML = ''); 
@@ -613,7 +659,7 @@
                     
                     selectEl.appendChild(option.cloneNode(true));
                     morningSelect.appendChild(option.cloneNode(true));
-                    lunchSelect.appendChild(option.cloneNode(true)); // 점심 추가
+                    lunchSelect.appendChild(option.cloneNode(true));
                     afternoonSelect.appendChild(option.cloneNode(true));
                 });
                 loadSettings(); 
@@ -638,34 +684,77 @@
                             : (trade.action === 'SELL' 
                                 ? '<span class="px-2 py-0.5 rounded text-xs font-bold bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">매도</span>' 
                                 : '<span class="px-2 py-0.5 rounded text-xs font-bold bg-gray-100 text-gray-600">기타</span>');
-                        const profit = parseFloat(trade.profit);
+                        const profit = parseFloat(trade.profit_rate || 0); // profit -> profit_rate로 수정
                         const profitColor = profit > 0 ? 'text-red-500' : (profit < 0 ? 'text-blue-500' : 'text-slate-400');
-                        const profitText = trade.action === 'SELL' ? `<span class="font-bold ${profitColor}">${trade.profit}%</span>` : '';
+                        const profitText = trade.action === 'SELL' ? `<span class="font-bold ${profitColor}">${profit.toFixed(2)}%</span>` : '';
+                        
+                        // AI 분석 내용 표시용 (툴팁 혹은 별도 표시)
+                        let aiReasonHtml = '';
+                        if (trade.ai_reason && trade.ai_reason !== 'None' && trade.ai_reason !== '') {
+                            aiReasonHtml = `<div class="mt-1 text-xs text-indigo-500 dark:text-indigo-400 flex items-center gap-1" title="${trade.ai_reason}">
+                                <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a6 6 0 00-6 6v3.586l-.707.707A1 1 0 004 14h12a1 1 0 00.707-1.707L16 11.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-3-3h6a3 3 0 01-3 3z"/></svg>
+                                <span>AI 분석: ${trade.ai_reason.length > 30 ? trade.ai_reason.substring(0, 30) + '...' : trade.ai_reason}</span>
+                            </div>`;
+                        }
+
                         const row = `
                             <tr class="border-b border-slate-100 dark:border-slate-700/50 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
                                 <td colspan="6" class="p-4">
                                     <div class="flex justify-between items-start mb-1">
                                         <div class="flex items-center gap-2">
                                             ${actionBadge}
-                                            <span class="font-bold text-slate-800 dark:text-slate-200 text-sm md:text-base">${trade.name}</span>
-                                            <span class="text-xs text-slate-400">(${trade.code || '-'})</span>
+                                            <span class="font-bold text-slate-800 dark:text-slate-200 text-sm md:text-base">${trade.stock_name}</span>
+                                            <span class="text-xs text-slate-400">(${trade.stock_code || '-'})</span>
                                         </div>
                                         <div class="text-right">${profitText}</div>
                                     </div>
                                     <div class="flex justify-between items-center text-xs md:text-sm text-slate-500 dark:text-slate-400">
                                         <div class="flex gap-2 items-center">
-                                            <span>${trade.time.split(' ')[1]}</span>
+                                            <span>${trade.timestamp.split(' ')[1]}</span>
                                             <span class="w-px h-3 bg-slate-300 dark:bg-slate-600"></span>
                                             <span>${parseInt(trade.price).toLocaleString()}원</span>
                                             <span class="text-slate-400">x ${trade.qty}</span>
                                         </div>
                                         <div class="truncate max-w-[120px] md:max-w-xs text-slate-400" title="${trade.reason}">${trade.reason}</div>
                                     </div>
+                                    ${aiReasonHtml}
                                 </td>
                             </tr>`;
                         tradesTableBody.innerHTML += row;
                     });
                 } else { tradesTableBody.innerHTML = '<tr><td colspan="6" class="px-4 py-10 text-center text-slate-500">매매 기록이 없습니다.</td></tr>'; }
+            }
+        }
+
+        // 🌟 [신규] 시스템 로그 로드 함수
+        async function loadSystemLogs() {
+            try {
+                const res = await fetchAPI('/api/logs');
+                const data = res; // fetchAPI returns JSON directly
+                const container = document.getElementById('system-log-container');
+                
+                if (data && data.logs && data.logs.length > 0) {
+                    const sortedLogs = [...data.logs].reverse(); // 최신이 아래로 오게 정렬 (터미널 느낌)
+                    const html = sortedLogs.map(log => {
+                        const timeStr = log.timestamp.substring(5); // MM-DD HH:MM:SS
+                        const levelClass = `log-${log.level}`;
+                        return `
+                            <div class="log-entry ${levelClass}">
+                                <span class="text-blue-400 mr-2">[${timeStr}]</span>
+                                <span class="font-bold mr-2">[${log.module}]</span>
+                                ${log.message}
+                            </div>
+                        `;
+                    }).join('');
+                    container.innerHTML = html;
+                    
+                    // 스크롤 맨 아래로
+                    container.parentElement.scrollTop = container.parentElement.scrollHeight;
+                } else {
+                    container.innerHTML = '<div class="text-center text-gray-500 mt-10">로그 데이터가 없습니다.</div>';
+                }
+            } catch (err) { 
+                console.error("System Log Error:", err); 
             }
         }
 
@@ -715,15 +804,23 @@
         document.getElementById('refresh-trades-btn').addEventListener('click', async () => {
             const btn = document.getElementById('refresh-trades-btn'); const icon = document.getElementById('refresh-icon');
             btn.disabled = true; icon.classList.add('animate-spin', 'text-blue-600', 'dark:text-blue-400');
-            try { await Promise.all([ loadTradesLog(true), new Promise(resolve => setTimeout(resolve, 600)) ]); showMessage('매매 기록 갱신 완료', 'success'); } 
-            catch (error) { showMessage('갱신 실패', 'error'); } finally { icon.classList.remove('animate-spin', 'text-blue-600', 'dark:text-blue-400'); btn.disabled = false; }
+            
+            // 현재 활성 탭에 따라 갱신 동작 분기
+            if (currentTab === 'trades') {
+                try { await Promise.all([ loadTradesLog(true), new Promise(resolve => setTimeout(resolve, 600)) ]); showMessage('매매 기록 갱신 완료', 'success'); } 
+                catch (error) { showMessage('갱신 실패', 'error'); } finally { icon.classList.remove('animate-spin', 'text-blue-600', 'dark:text-blue-400'); btn.disabled = false; }
+            } else {
+                try { await Promise.all([ loadSystemLogs(), new Promise(resolve => setTimeout(resolve, 600)) ]); showMessage('시스템 로그 갱신 완료', 'success'); } 
+                catch (error) { showMessage('갱신 실패', 'error'); } finally { icon.classList.remove('animate-spin', 'text-blue-600', 'dark:text-blue-400'); btn.disabled = false; }
+            }
         });
 
         function initializeDashboard() {
             loadConditions(); loadTradesLog(); updateBotStatus(); updateDetectedStocks();
             setInterval(() => { 
                 updateBotStatus(); 
-                loadTradesLog(); 
+                if (currentTab === 'trades') loadTradesLog();
+                else loadSystemLogs();
                 updateDetectedStocks();
                 loadSettings(true); 
             }, 3000); 

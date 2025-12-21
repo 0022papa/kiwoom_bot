@@ -48,6 +48,15 @@ db.serialize(() => {
         status TEXT DEFAULT 'PENDING',
         created_at TEXT
     )`);
+
+    // 4. 시스템 로그 (봇 실행/에러 로그)
+    db.run(`CREATE TABLE IF NOT EXISTS system_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT,
+        level TEXT,
+        module TEXT,
+        message TEXT
+    )`);
 });
 
 // --- DB Helper Functions ---
@@ -204,7 +213,7 @@ app.get('/api/conditions', checkAuth, async (req, res) => {
     } catch (error) { res.json({ conditions: [] }); }
 });
 
-// 로그 파일 파싱 -> DB 조회로 변경
+// 매매 로그 조회 (DB)
 app.get('/api/trades', checkAuth, (req, res) => {
     db.all("SELECT * FROM trade_logs ORDER BY id DESC LIMIT 100", [], (err, rows) => {
         if (err) {
@@ -213,6 +222,14 @@ app.get('/api/trades', checkAuth, (req, res) => {
         } else {
             res.json({ trades: rows });
         }
+    });
+});
+
+// 🌟 [신규] 시스템 로그 조회 (DB)
+app.get('/api/logs', checkAuth, (req, res) => {
+    db.all("SELECT * FROM system_logs ORDER BY id DESC LIMIT 200", [], (err, rows) => {
+        if (err) res.json({ logs: [] });
+        else res.json({ logs: rows });
     });
 });
 

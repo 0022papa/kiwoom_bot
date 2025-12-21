@@ -11,19 +11,19 @@ class BotDB:
         self._init_db()
 
     def _get_conn(self):
-        return sqlite3.connect(DB_PATH)
+        return sqlite3.connect(DB_PATH, check_same_thread=False)
 
     def _init_db(self):
         with self._get_conn() as conn:
             c = conn.cursor()
-            # 1. 키-값 저장소 (Settings, Status, Conditions 등 저장)
+            # 1. 키-값 저장소
             c.execute('''CREATE TABLE IF NOT EXISTS kv_store (
                         key TEXT PRIMARY KEY,
                         value TEXT,
                         updated_at TEXT
                     )''')
             
-            # 2. 매매 로그 (구조화된 데이터)
+            # 2. 매매 로그
             c.execute('''CREATE TABLE IF NOT EXISTS trade_logs (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         timestamp TEXT,
@@ -39,7 +39,7 @@ class BotDB:
                         ai_reason TEXT
                     )''')
 
-            # 3. 명령 큐 (Node.js -> Python 명령 전달용)
+            # 3. 명령 큐
             c.execute('''CREATE TABLE IF NOT EXISTS command_queue (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         cmd_type TEXT,
@@ -47,59 +47,88 @@ class BotDB:
                         status TEXT DEFAULT 'PENDING',
                         created_at TEXT
                     )''')
+            
+            # 🌟 [신규] 시스템 로그 테이블
+            c.execute('''CREATE TABLE IF NOT EXISTS system_logs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TEXT,
+                        level TEXT,
+                        module TEXT,
+                        message TEXT
+                    )''')
             conn.commit()
 
     # --- KV Store 메서드 ---
     def get_kv(self, key, default=None):
-        with self._get_conn() as conn:
-            c = conn.cursor()
-            c.execute("SELECT value FROM kv_store WHERE key=?", (key,))
-            row = c.fetchone()
-            if row:
-                try: return json.loads(row[0])
-                except: return row[0]
-            return default
+        try:
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                c.execute("SELECT value FROM kv_store WHERE key=?", (key,))
+                row = c.fetchone()
+                if row:
+                    try: return json.loads(row[0])
+                    except: return row[0]
+                return default
+        except: return default
 
     def set_kv(self, key, value):
-        with self._get_conn() as conn:
-            c = conn.cursor()
-            val_str = json.dumps(value, ensure_ascii=False)
-            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            c.execute("INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES (?, ?, ?)", 
-                      (key, val_str, now))
-            conn.commit()
+        try:
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                val_str = json.dumps(value, ensure_ascii=False)
+                now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                c.execute("INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES (?, ?, ?)", 
+                          (key, val_str, now))
+                conn.commit()
+        except: pass
 
     # --- Trade Log 메서드 ---
     def log_trade(self, data):
-        with self._get_conn() as conn:
-            c = conn.cursor()
-            c.execute('''INSERT INTO trade_logs 
-                        (timestamp, action, stock_code, stock_name, qty, price, reason, profit_rate, profit_amt, image_path, ai_reason)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                      (data['timestamp'], data['action'], data['stock_code'], data['stock_name'], 
-                       data['qty'], data['price'], data['reason'], data['profit_rate'], 
-                       data['profit_amt'], data.get('image_path'), data.get('ai_reason')))
-            conn.commit()
+        try:
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                c.execute('''INSERT INTO trade_logs 
+                            (timestamp, action, stock_code, stock_name, qty, price, reason, profit_rate, profit_amt, image_path, ai_reason)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                          (data['timestamp'], data['action'], data['stock_code'], data['stock_name'], 
+                           data['qty'], data['price'], data['reason'], data['profit_rate'], 
+                           data['profit_amt'], data.get('image_path'), data.get('ai_reason')))
+                conn.commit()
+        except: pass
 
     def get_recent_trades(self, limit=100):
-        with self._get_conn() as conn:
-            conn.row_factory = sqlite3.Row
-            c = conn.cursor()
-            c.execute("SELECT * FROM trade_logs ORDER BY id DESC LIMIT ?", (limit,))
-            return [dict(row) for row in c.fetchall()]
+        try:
+            with self._get_conn() as conn:
+                conn.row_factory = sqlite3.Row
+                c = conn.cursor()
+                c.execute("SELECT * FROM trade_logs ORDER BY id DESC LIMIT ?", (limit,))
+                return [dict(row) for row in c.fetchall()]
+        except: return []
 
     # --- Command 메서드 ---
     def pop_command(self):
-        """ 처리되지 않은 가장 오래된 명령을 가져오고 상태를 변경 """
-        with self._get_conn() as conn:
-            conn.row_factory = sqlite3.Row
-            c = conn.cursor()
-            c.execute("SELECT * FROM command_queue WHERE status='PENDING' ORDER BY id ASC LIMIT 1")
-            row = c.fetchone()
-            if row:
-                c.execute("UPDATE command_queue SET status='DONE' WHERE id=?", (row['id'],))
+        try:
+            with self._get_conn() as conn:
+                conn.row_factory = sqlite3.Row
+                c = conn.cursor()
+                c.execute("SELECT * FROM command_queue WHERE status='PENDING' ORDER BY id ASC LIMIT 1")
+                row = c.fetchone()
+                if row:
+                    c.execute("UPDATE command_queue SET status='DONE' WHERE id=?", (row['id'],))
+                    conn.commit()
+                    return dict(row)
+                return None
+        except: return None
+
+    # 🌟 [신규] 시스템 로그 저장 메서드
+    def save_system_log(self, level, message, module="Bot"):
+        try:
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                c.execute("INSERT INTO system_logs (timestamp, level, module, message) VALUES (?, ?, ?, ?)", 
+                          (now, level, module, str(message)))
                 conn.commit()
-                return dict(row)
-            return None
+        except: pass
 
 db = BotDB()

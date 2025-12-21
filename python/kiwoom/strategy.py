@@ -68,6 +68,16 @@ except AttributeError: pass
 
 strategy_logger = logging.getLogger("Strategy")
 
+# 🌟 [신규] DB 로깅 핸들러 정의
+class DBLoggingHandler(logging.Handler):
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            # DB 저장 (안전하게 처리)
+            db.save_system_log(record.levelname, msg, record.name)
+        except Exception:
+            self.handleError(record)
+
 # ---------------------------------------------------------
 # 2. 전역 변수 설정
 # ---------------------------------------------------------
@@ -1073,6 +1083,7 @@ def setup_logging(debug_mode=False):
     logger = logging.getLogger()
     if logger.hasHandlers(): logger.handlers.clear()
 
+    # 1. 콘솔 핸들러
     stream_handler = logging.StreamHandler(sys.stdout)
     if debug_mode:
         logger.setLevel(logging.DEBUG)
@@ -1083,6 +1094,7 @@ def setup_logging(debug_mode=False):
     stream_handler.setFormatter(console_formatter)
     logger.addHandler(stream_handler)
 
+    # 2. 파일 핸들러
     log_dir = "/data/logs"
     os.makedirs(log_dir, exist_ok=True)
     file_handler = TimedRotatingFileHandler(
@@ -1092,6 +1104,11 @@ def setup_logging(debug_mode=False):
     file_formatter = logging.Formatter('[%(asctime)s] [%(levelname)s] %(filename)s:%(lineno)d - %(message)s')
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
+
+    # 🌟 3. DB 핸들러 추가
+    db_handler = DBLoggingHandler()
+    db_handler.setFormatter(console_formatter)
+    logger.addHandler(db_handler)
 
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("websockets").setLevel(logging.WARNING)
@@ -1187,21 +1204,17 @@ async def main():
                 await save_status_to_file(force=True)
                 last_force_save = datetime.now()
 
-            # 🌟 [수정] 일별 리포트 전송 로직 (DB 기반 중복 방지 + 시간 제한)
+            # 🌟 일별 리포트 전송 (DB 체크)
             try:
                 now = datetime.now()
                 # 15시 40분 ~ 49분 사이에만 체크
                 if now.hour == 15 and 40 <= now.minute < 50:
                     today_str = now.strftime('%Y-%m-%d')
-                    
-                    # DB에서 오늘 발송 여부 확인
                     last_sent_date = await run_blocking(db.get_kv, "last_daily_report_date")
                     
                     if last_sent_date != today_str:
                         await send_daily_report()
-                        # 발송 후 DB에 오늘 날짜 저장 (중복 방지)
                         await run_blocking(db.set_kv, "last_daily_report_date", today_str)
-
             except Exception as e:
                 strategy_logger.error(f"리포트 체크 중 오류: {e}")
 
