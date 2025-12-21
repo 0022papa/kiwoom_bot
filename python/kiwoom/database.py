@@ -11,7 +11,11 @@ class BotDB:
         self._init_db()
 
     def _get_conn(self):
-        return sqlite3.connect(DB_PATH, check_same_thread=False)
+        # timeout을 30초로 넉넉하게 설정 (기본값 5초)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30.0)
+        # WAL 모드 활성화 (동시성 성능 향상 및 Lock 에러 감소)
+        conn.execute("PRAGMA journal_mode=WAL;")
+        return conn
 
     def _init_db(self):
         with self._get_conn() as conn:
