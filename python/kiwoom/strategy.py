@@ -1139,6 +1139,15 @@ async def main():
     telegram_task = asyncio.create_task(_telegram_worker())
 
     await run_self_diagnosis()
+
+    # 🌟 [추가] 봇 시작 시 오래된 DB 데이터 정리 (기본 7일)
+    try:
+        del_trades, del_logs = await run_blocking(db.cleanup_old_data, 7)
+        if del_trades > 0 or del_logs > 0:
+            strategy_logger.info(f"🧹 [DB정리] 7일 지난 데이터 삭제 완료 (매매: {del_trades}건, 로그: {del_logs}건)")
+    except Exception as e:
+        strategy_logger.error(f"⚠️ DB 정리 중 오류 발생: {e}")
+
     await set_booting_status("BOOTING", target_mode=MOCK_TRADE)
     await run_blocking(create_master_stock_file)
 

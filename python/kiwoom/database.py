@@ -2,8 +2,10 @@ import sqlite3
 import json
 import os
 import time
-from datetime import datetime
+# [수정] timedelta 추가
+from datetime import datetime, timedelta
 
+# DB 경로 설정 (환경에 맞게 수정 가능)
 DB_PATH = "/data/kiwoom_bot.db"
 
 class BotDB:
@@ -134,5 +136,28 @@ class BotDB:
                           (now, level, module, str(message)))
                 conn.commit()
         except: pass
+
+    # 🌟 [추가] 오래된 데이터 정리 메서드
+    def cleanup_old_data(self, days=7):
+        """ 지정된 기간(days)보다 오래된 로그 데이터를 삭제합니다. """
+        try:
+            cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                # 1. 매매 로그 정리
+                c.execute("DELETE FROM trade_logs WHERE timestamp < ?", (cutoff_date,))
+                trade_count = c.rowcount
+                
+                # 2. 시스템 로그 정리
+                c.execute("DELETE FROM system_logs WHERE timestamp < ?", (cutoff_date,))
+                log_count = c.rowcount
+                
+                # 3. 완료된 명령 큐 정리 (옵션)
+                c.execute("DELETE FROM command_queue WHERE status='DONE' AND created_at < ?", (cutoff_date,))
+                
+                conn.commit()
+                return trade_count, log_count
+        except Exception as e:
+            return 0, 0
 
 db = BotDB()
