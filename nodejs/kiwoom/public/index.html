@@ -730,11 +730,15 @@
         async function loadSystemLogs() {
             try {
                 const res = await fetchAPI('/api/logs');
-                const data = res; // fetchAPI returns JSON directly
+                const data = res; 
                 const container = document.getElementById('system-log-container');
+                const scrollParent = container.parentElement; // 스크롤이 생기는 부모 요소
+
+                // 1. 현재 스크롤이 맨 아래 근처인지 확인 (오차범위 50px)
+                const isAtBottom = scrollParent.scrollHeight - scrollParent.scrollTop - scrollParent.clientHeight < 50;
                 
                 if (data && data.logs && data.logs.length > 0) {
-                    const sortedLogs = [...data.logs].reverse(); // 최신이 아래로 오게 정렬 (터미널 느낌)
+                    const sortedLogs = [...data.logs].reverse(); // 최신이 아래로 오게 정렬
                     const html = sortedLogs.map(log => {
                         const timeStr = log.timestamp.substring(5); // MM-DD HH:MM:SS
                         const levelClass = `log-${log.level}`;
@@ -746,10 +750,14 @@
                             </div>
                         `;
                     }).join('');
+                    
                     container.innerHTML = html;
                     
-                    // 스크롤 맨 아래로
-                    container.parentElement.scrollTop = container.parentElement.scrollHeight;
+                    // 2. 이전에 맨 아래를 보고 있었을 때만 스크롤 내리기 (자동 스크롤)
+                    // 사용자가 위를 보고 있었다면 스크롤을 건드리지 않음
+                    if (isAtBottom) {
+                        scrollParent.scrollTop = scrollParent.scrollHeight;
+                    }
                 } else {
                     container.innerHTML = '<div class="text-center text-gray-500 mt-10">로그 데이터가 없습니다.</div>';
                 }

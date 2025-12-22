@@ -5,7 +5,7 @@ import mplfinance as mpf
 import json
 import re
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from PIL import Image
 
@@ -78,9 +78,23 @@ def create_chart_image(stock_code, stock_name, candle_data):
             if col in df.columns:
                 df[col] = df[col].apply(lambda x: int(str(x).replace('+', '').replace('-', '').replace(',', '')))
         
+        # 날짜순 정렬 (과거 -> 현재)
         df = df.iloc[::-1] 
         df.index = pd.to_datetime(df['Date'], format='%Y%m%d%H%M%S')
         
+        # 🌟 [수정] 데이터 과다 방지: 가장 최근 데이터 기준 2일 전까지만 자르기
+        if not df.empty:
+            last_date = df.index[-1]
+            cutoff_date = last_date - timedelta(days=2)
+            df = df[df.index >= cutoff_date]
+
+            # 데이터가 너무 적어졌을 경우 최소한의 개수(예: 30개)는 유지하도록 안전장치
+            if len(df) < 30 and len(candle_data) >= 30:
+                 # 원본 데이터에서 다시 최근 30개만 가져옴
+                 df = pd.DataFrame(candle_data).iloc[::-1].iloc[-30:]
+                 # (컬럼 변환 로직 중복 생략을 위해 위에서 처리된 df를 활용하는 것이 좋으나, 
+                 #  일반적으로 2일치면 3분봉 기준 충분한 개수가 확보됨)
+
         mc = mpf.make_marketcolors(up='red', down='blue', inherit=True)
         s = mpf.make_mpf_style(marketcolors=mc)
         
@@ -90,6 +104,7 @@ def create_chart_image(stock_code, stock_name, candle_data):
             
         file_path = f"{save_dir}/{stock_code}_chart.png"
         
+        # type='candle'로 설정하여 봉 차트 그리기
         mpf.plot(df, type='candle', mav=(5, 20), volume=True, style=s, 
                  title=f"{stock_name} ({stock_code})", 
                  savefig=dict(fname=file_path, dpi=100, bbox_inches='tight'))

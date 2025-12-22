@@ -106,12 +106,12 @@ DEFAULT_SETTINGS = {
     "TRAILING_STOP_RATE": -1.0,
     "RE_ENTRY_COOLDOWN_MIN": 30,
     "USE_MARKET_TIME": True,
-    "USE_AUTO_SELL": False,
+    "USE_AUTO_SELL": True,
     "USE_TELEGRAM": True,
     "DEBUG_MODE": False,
     "USE_SCHEDULER": True,
     "MORNING_START": "08:50", "MORNING_COND": "0",
-    "LUNCH_START": "11:30", "LUNCH_COND": "1",
+    "LUNCH_START": "10:30", "LUNCH_COND": "1",
     "AFTERNOON_START": "15:10", "AFTERNOON_COND": "2",
     "USE_HOGA_FILTER": True,
     "MIN_BUY_SELL_RATIO": 0.5,
@@ -150,8 +150,7 @@ def parse_price(price_str):
         clean_str = str(price_str).strip().replace('+', '').replace('-', '')
         if not clean_str: return 0
         return int(clean_str)
-    except ValueError: return 0
-
+    except ValueError: return 
 async def load_condition_names():
     global CACHED_CONDITION_NAMES
     try:
