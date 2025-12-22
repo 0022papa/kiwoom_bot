@@ -182,7 +182,7 @@ def ask_ai_to_buy(image_path, condition_id="0"):
         selected_client = random.choice(CLIENT_POOL)
 
         response = selected_client.models.generate_content(
-            model='gemini-2.0-flash-exp', # 또는 'gemini-1.5-flash'
+            model='gemini-3-flash-preview', # 또는 'gemini-1.5-flash'
             contents=[final_prompt, image],
             config=generate_config
         )

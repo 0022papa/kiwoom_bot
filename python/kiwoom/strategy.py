@@ -9,6 +9,7 @@ import signal
 import hashlib
 import queue
 import exchange_calendars as xcals
+import pandas as pd
 from collections import deque
 from datetime import datetime, timedelta
 from logging.handlers import TimedRotatingFileHandler
@@ -318,25 +319,77 @@ def is_market_open():
 
 async def analyze_chart_pattern(stock_code, condition_id="0"):
     try:
+        # 1. 3분봉 데이터 조회 (여유 있게 60개 요청)
         chart_data = await run_blocking(fn_ka10080_get_minute_chart, stock_code, tick="3")
-        if not chart_data or len(chart_data) < 20: return True, None, None
+        if not chart_data or len(chart_data) < 30: 
+            return True, None, None  # 데이터 부족 시 일단 통과 (AI 판단 맡김) 또는 보수적이면 False
 
-        last_candle = chart_data[1] 
-        open_p = abs(int(last_candle.get('open_pric', 0)))
-        close_p = abs(int(last_candle.get('cur_prc', 0)))
-        high_p = abs(int(last_candle.get('high_pric', 0)))
-        low_p = abs(int(last_candle.get('low_pric', 0)))
+        # 2. 데이터 프레임 변환 및 전처리 (수치 분석용)
+        # 키움 데이터는 문자열이므로 숫자로 변환 필요
+        df = pd.DataFrame(chart_data)
+        df['close'] = df['cur_prc'].apply(lambda x: abs(int(x)) if x else 0)
+        df['open'] = df['open_pric'].apply(lambda x: abs(int(x)) if x else 0)
+        df['high'] = df['high_pric'].apply(lambda x: abs(int(x)) if x else 0)
+        df['low'] = df['low_pric'].apply(lambda x: abs(int(x)) if x else 0)
+        df['volume'] = df['trde_qty'].apply(lambda x: int(x) if x else 0)
         
-        if open_p == 0: return True, None, None
+        # 키움 API는 최신 데이터가 인덱스 0번에 위치함 (과거 -> 최신 순 정렬 필요 시 ::-1)
+        # 분석 편의를 위해 최신이 맨 뒤로 가게 정렬 (시간 오름차순)
+        df = df.iloc[::-1].reset_index(drop=True)
 
+        # ---------------------------------------------------------
+        # 🛡️ [2차 필터] 기술적 지표 계산 (Programmatic Filter)
+        # ---------------------------------------------------------
+        
+        # (1) 이동평균선 계산
+        df['MA5'] = df['close'].rolling(window=5).mean()
+        df['MA20'] = df['close'].rolling(window=20).mean()
+        
+        current_idx = len(df) - 1 # 현재 진행 중인 캔들
+        last_complete_idx = len(df) - 2 # 직전 완성 캔들
+
+        current_close = df.loc[current_idx, 'close']
+        ma5 = df.loc[current_idx, 'MA5']
+        ma20 = df.loc[current_idx, 'MA20']
+        
+        # 🚫 조건 A: 역배열 필터링 (현재가가 20일 이평선보다 아래면 진입 금지)
+        if current_close < ma20:
+            strategy_logger.info(f"🛡️ [기술적필터] {stock_code}: 추세 이탈 (현재가 < 20이평) -> 진입 포기")
+            return False, None, "추세 이탈(역배열)"
+
+        # (2) 윗꼬리 계산 (기존 로직 고도화)
+        last_candle = df.loc[last_complete_idx] # 완성된 봉 기준 분석
+        open_p = last_candle['open']
+        close_p = last_candle['close']
+        high_p = last_candle['high']
+        low_p = last_candle['low']
+
+        body_len = abs(close_p - open_p)
         total_len = high_p - low_p
-        upper_shadow = high_p - close_p if close_p > open_p else high_p - open_p
-        
-        if total_len > 0 and (upper_shadow / total_len) > 0.4:
-            strategy_logger.info(f"🛡️ [1차필터] {stock_code}: 윗꼬리 과다 -> 진입 포기")
-            return False, None, "1차필터(윗꼬리) 탈락"
+        upper_shadow = high_p - max(close_p, open_p)
 
-        stk_nm = "Stock"
+        # 🚫 조건 B: 윗꼬리가 전체 길이의 50% 이상이면 위험 (매도세 강력)
+        if total_len > 0 and (upper_shadow / total_len) > 0.5:
+            strategy_logger.info(f"🛡️ [기술적필터] {stock_code}: 윗꼬리 과다({upper_shadow/total_len:.2f}) -> 진입 포기")
+            return False, None, "윗꼬리 과다"
+
+        # (3) 거래량 급감 필터 (옵션)
+        # 최근 5개 봉 평균 거래량보다 현재 거래량이 너무 적으면(관심 소멸) 패스
+        avg_vol_5 = df['volume'].iloc[-6:-1].mean()
+        current_vol = df.loc[current_idx, 'volume']
+        
+        # 장 초반이나 특정 상황 제외하고, 거래량이 평소의 30%도 안되면 의심
+        if avg_vol_5 > 0 and current_vol < (avg_vol_5 * 0.3):
+             # 단, 가격이 급등 중이라면 거래량 적어도 ok일 수 있으므로 로깅만 하거나 보수적이면 리턴
+             pass 
+
+        # ---------------------------------------------------------
+        # 🤖 [3차 필터] AI 이미지 분석 (최종 관문)
+        # ---------------------------------------------------------
+        stk_nm = "Stock" # 호출처에서 이름을 알 수 없으면 기본값, 가능하다면 인자로 받기 추천
+        
+        # AI에게 보낼 이미지는 다시 원본 데이터 형태(리스트)를 기반으로 생성하거나 DF 활용
+        # create_chart_image 함수가 리스트를 기대하므로 원본 chart_data 전달
         image_path = await run_blocking(create_chart_image, stock_code, stk_nm, chart_data)
         
         if image_path:
@@ -351,9 +404,11 @@ async def analyze_chart_pattern(stock_code, condition_id="0"):
                 return False, None, reason
         
         return True, None, None
+
     except Exception as e:
         strategy_logger.error(f"차트 분석 중 오류 ({stock_code}): {e}")
-        return True, None, None
+        # 오류 발생 시 안전하게 False 반환 (무작정 매수 방지)
+        return False, None, f"분석 오류: {e}"
         
 async def apply_condition_preset(target_id):
     if target_id in STRATEGY_PRESETS:
