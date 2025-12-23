@@ -8,6 +8,7 @@ import traceback
 import signal
 import hashlib
 import queue
+import re  # 🌟 [추가] 정규표현식 모듈
 import exchange_calendars as xcals
 import pandas as pd
 from collections import deque
@@ -151,7 +152,8 @@ def parse_price(price_str):
         clean_str = str(price_str).strip().replace('+', '').replace('-', '')
         if not clean_str: return 0
         return int(clean_str)
-    except ValueError: return 
+    except ValueError: return 0
+
 async def load_condition_names():
     global CACHED_CONDITION_NAMES
     try:
@@ -216,20 +218,55 @@ async def send_daily_report():
         today_str = datetime.now().strftime('%Y-%m-%d')
         server_profit = await run_blocking(fn_ka10074_get_daily_profit)
 
+        # 🌟 [수정] 조건식별 승률 계산을 위해 매매 내역을 가져와서 정렬 및 분석
         trades = await run_blocking(db.get_recent_trades, 1000)
         
-        total_buy_cnt = 0; total_sell_cnt = 0; win_cnt = 0; loss_cnt = 0; log_profit = 0
+        # 시간순 정렬 (매수 -> 매도 연결을 위해)
+        trades.sort(key=lambda x: x['timestamp'])
+
+        total_buy_cnt = 0
+        total_sell_cnt = 0
+        win_cnt = 0
+        loss_cnt = 0
+        log_profit = 0
+        
+        # 종목별 매수 조건 저장용 (stock_code -> condition_id)
+        buy_condition_map = {}
+        # 조건식별 통계 (cond_id -> {win, loss, profit})
+        cond_stats = {}
 
         for t in trades:
-            if not t['timestamp'].startswith(today_str): continue
-            action = t['action']
-            if action == "BUY": total_buy_cnt += 1
-            if action == "SELL":
+            # 1) 매수 시 조건식 정보 기록 (날짜 상관없이 기록해야 매도와 매칭 가능)
+            if t['action'] == "BUY":
+                if t['timestamp'].startswith(today_str):
+                    total_buy_cnt += 1
+                
+                # reason에서 조건식 ID 추출 ("조건검색(0)" 형태)
+                match = re.search(r"조건검색\((\d+)\)", t['reason'])
+                if match:
+                    buy_condition_map[t['stock_code']] = match.group(1)
+                else:
+                    buy_condition_map[t['stock_code']] = "MANUAL"
+
+            # 2) 매도 시 성과 계산 (오늘 날짜인 경우만 집계)
+            elif t['action'] == "SELL" and t['timestamp'].startswith(today_str):
                 total_sell_cnt += 1
                 rate = t['profit_rate']
+                amt = t['profit_amt']
+                
                 if rate > 0: win_cnt += 1
                 else: loss_cnt += 1
-                log_profit += t['profit_amt']
+                log_profit += amt
+
+                # 해당 종목을 매수했던 조건식 찾기
+                cond_id = buy_condition_map.get(t['stock_code'], "UNKNOWN")
+                
+                if cond_id not in cond_stats:
+                    cond_stats[cond_id] = {'win': 0, 'loss': 0, 'profit': 0}
+                
+                if rate > 0: cond_stats[cond_id]['win'] += 1
+                else: cond_stats[cond_id]['loss'] += 1
+                cond_stats[cond_id]['profit'] += amt
 
         final_profit = server_profit if server_profit is not None else log_profit
         source_msg = "(서버 확정)" if server_profit is not None else "(예상 추정치)"
@@ -246,13 +283,35 @@ async def send_daily_report():
             f"{profit_emoji} <b>실현손익: {final_profit:,}원</b>\n"
             f"<i>{source_msg}</i>\n"
             f"━━━━━━━━━━━━━━\n"
-            f"오늘 하루도 수고하셨습니다! ☕"
         )
+
+        # 🌟 [추가] 조건식별 성과 출력
+        if cond_stats:
+            msg += "📊 <b>[조건식별 성과]</b>\n"
+            for cid, stat in cond_stats.items():
+                c_name = CACHED_CONDITION_NAMES.get(cid, cid)
+                if cid == "MANUAL": c_name = "수동/기타"
+                elif cid == "UNKNOWN": c_name = "알수없음"
+
+                c_win = stat['win']
+                c_loss = stat['loss']
+                c_total = c_win + c_loss
+                c_rate = (c_win / c_total * 100) if c_total > 0 else 0
+                
+                # 이모지: 승률 50% 이상이면 🔴 아니면 🔵
+                rate_emoji = "🔴" if c_rate >= 50 else "🔵"
+                msg += f"{rate_emoji} {c_name}: {c_rate:.0f}% ({c_win}승 {c_loss}패)\n"
+            msg += "━━━━━━━━━━━━━━\n"
+            
+        msg += "오늘 하루도 수고하셨습니다! ☕"
+        
         send_telegram_msg(msg)
         strategy_logger.info(f"일별 마감 리포트 전송 완료 (손익: {final_profit})")
 
     except Exception as e:
         strategy_logger.error(f"리포트 생성 실패: {e}")
+        # 에러 발생 시 traceback 출력하여 디버깅 용이하게 함
+        strategy_logger.error(traceback.format_exc())
 
 async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=0, profit_amt=0, peak_rate=0, image_path=None, ai_reason=None):
     try:
@@ -801,6 +860,8 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
 
             if current_price <= 0:
                 strategy_logger.warning(f"❌ {stk_nm}({stock_code}) 가격 정보 없음. 스킵.")
+                # 🌟 [수정] 가격 정보 없으면 잠시 쿨다운 (API 낭비 방지)
+                RE_ENTRY_COOLDOWN[stock_code] = datetime.now() + timedelta(minutes=1)
                 return
 
             if use_hoga_filter:
@@ -813,9 +874,17 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                         ratio = buy_total / sell_total
                         if ratio < min_ratio:
                             strategy_logger.info(f"🛡️ [호가필터] {stk_nm} 진입 금지 (비율: {ratio:.2f})")
+                            # 🌟 [수정] 호가 필터 탈락 시 쿨다운 설정 (5분)
+                            RE_ENTRY_COOLDOWN[stock_code] = datetime.now() + timedelta(minutes=5)
                             return
-                    else: return
-                else: return
+                    else:
+                         # 🌟 [수정] 호가 데이터 이상 시 쿨다운
+                         RE_ENTRY_COOLDOWN[stock_code] = datetime.now() + timedelta(minutes=1)
+                         return
+                else:
+                     # 🌟 [수정] 호가 데이터 조회 실패 시 쿨다운
+                     RE_ENTRY_COOLDOWN[stock_code] = datetime.now() + timedelta(minutes=1)
+                     return
 
             await GLOBAL_API_LIMITER.wait()
             is_good_chart, image_path, ai_reason = await analyze_chart_pattern(stock_code, condition_id)
@@ -1288,7 +1357,7 @@ async def main():
                 if not is_market_open():
                     now_time = datetime.now().time()
                     
-                    if (datetime.now() - last_alive_log).total_seconds() > 1800:
+                    if (datetime.now() - last_alive_log).total_seconds() > 3600:
                         msg = f"💤 [장마감] 대기 모드\n보유: {len(TRADING_STATE)}종목"
                         strategy_logger.info(msg.replace("\n", " / "))
                         send_telegram_msg(msg)
@@ -1321,7 +1390,7 @@ async def main():
                     await asyncio.sleep(1)
                     continue
 
-                if (datetime.now() - last_alive_log).total_seconds() > 1800:
+                if (datetime.now() - last_alive_log).total_seconds() > 3600:
                     msg = f"💓 [생존신고] 봇 작동 중\n보유: {len(TRADING_STATE)}종목"
                     strategy_logger.info(msg.replace("\n", " / "))
                     send_telegram_msg(msg)
@@ -1360,7 +1429,7 @@ async def main():
                         strategy_logger.info("🛡️ [매수중지] 상태지만 매도 감시는 가동 중입니다.")
                     last_stopped_log = datetime.now()
 
-                if (datetime.now() - last_alive_log).total_seconds() > 1800:
+                if (datetime.now() - last_alive_log).total_seconds() > 3600:
                      send_telegram_msg("⏸ [대기중] 봇 정지 상태입니다.")
                      last_alive_log = datetime.now()
 
