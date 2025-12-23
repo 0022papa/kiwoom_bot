@@ -8,7 +8,7 @@ import traceback
 import signal
 import hashlib
 import queue
-import re  # 🌟 [추가] 정규표현식 모듈
+import re
 import exchange_calendars as xcals
 import pandas as pd
 from collections import deque
@@ -218,52 +218,30 @@ async def send_daily_report():
         today_str = datetime.now().strftime('%Y-%m-%d')
         server_profit = await run_blocking(fn_ka10074_get_daily_profit)
 
-        # 🌟 [수정] 조건식별 승률 계산을 위해 매매 내역을 가져와서 정렬 및 분석
         trades = await run_blocking(db.get_recent_trades, 1000)
-        
-        # 시간순 정렬 (매수 -> 매도 연결을 위해)
         trades.sort(key=lambda x: x['timestamp'])
 
-        total_buy_cnt = 0
-        total_sell_cnt = 0
-        win_cnt = 0
-        loss_cnt = 0
-        log_profit = 0
-        
-        # 종목별 매수 조건 저장용 (stock_code -> condition_id)
+        total_buy_cnt = 0; total_sell_cnt = 0; win_cnt = 0; loss_cnt = 0; log_profit = 0
         buy_condition_map = {}
-        # 조건식별 통계 (cond_id -> {win, loss, profit})
         cond_stats = {}
 
         for t in trades:
-            # 1) 매수 시 조건식 정보 기록 (날짜 상관없이 기록해야 매도와 매칭 가능)
             if t['action'] == "BUY":
-                if t['timestamp'].startswith(today_str):
-                    total_buy_cnt += 1
-                
-                # reason에서 조건식 ID 추출 ("조건검색(0)" 형태)
+                if t['timestamp'].startswith(today_str): total_buy_cnt += 1
                 match = re.search(r"조건검색\((\d+)\)", t['reason'])
-                if match:
-                    buy_condition_map[t['stock_code']] = match.group(1)
-                else:
-                    buy_condition_map[t['stock_code']] = "MANUAL"
+                if match: buy_condition_map[t['stock_code']] = match.group(1)
+                else: buy_condition_map[t['stock_code']] = "MANUAL"
 
-            # 2) 매도 시 성과 계산 (오늘 날짜인 경우만 집계)
             elif t['action'] == "SELL" and t['timestamp'].startswith(today_str):
                 total_sell_cnt += 1
                 rate = t['profit_rate']
                 amt = t['profit_amt']
-                
                 if rate > 0: win_cnt += 1
                 else: loss_cnt += 1
                 log_profit += amt
 
-                # 해당 종목을 매수했던 조건식 찾기
                 cond_id = buy_condition_map.get(t['stock_code'], "UNKNOWN")
-                
-                if cond_id not in cond_stats:
-                    cond_stats[cond_id] = {'win': 0, 'loss': 0, 'profit': 0}
-                
+                if cond_id not in cond_stats: cond_stats[cond_id] = {'win': 0, 'loss': 0, 'profit': 0}
                 if rate > 0: cond_stats[cond_id]['win'] += 1
                 else: cond_stats[cond_id]['loss'] += 1
                 cond_stats[cond_id]['profit'] += amt
@@ -284,33 +262,25 @@ async def send_daily_report():
             f"<i>{source_msg}</i>\n"
             f"━━━━━━━━━━━━━━\n"
         )
-
-        # 🌟 [추가] 조건식별 성과 출력
         if cond_stats:
             msg += "📊 <b>[조건식별 성과]</b>\n"
             for cid, stat in cond_stats.items():
                 c_name = CACHED_CONDITION_NAMES.get(cid, cid)
                 if cid == "MANUAL": c_name = "수동/기타"
                 elif cid == "UNKNOWN": c_name = "알수없음"
-
-                c_win = stat['win']
-                c_loss = stat['loss']
+                c_win = stat['win']; c_loss = stat['loss']
                 c_total = c_win + c_loss
                 c_rate = (c_win / c_total * 100) if c_total > 0 else 0
-                
-                # 이모지: 승률 50% 이상이면 🔴 아니면 🔵
                 rate_emoji = "🔴" if c_rate >= 50 else "🔵"
                 msg += f"{rate_emoji} {c_name}: {c_rate:.0f}% ({c_win}승 {c_loss}패)\n"
             msg += "━━━━━━━━━━━━━━\n"
             
         msg += "오늘 하루도 수고하셨습니다! ☕"
-        
         send_telegram_msg(msg)
         strategy_logger.info(f"일별 마감 리포트 전송 완료 (손익: {final_profit})")
 
     except Exception as e:
         strategy_logger.error(f"리포트 생성 실패: {e}")
-        # 에러 발생 시 traceback 출력하여 디버깅 용이하게 함
         strategy_logger.error(traceback.format_exc())
 
 async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=0, profit_amt=0, peak_rate=0, image_path=None, ai_reason=None):
@@ -693,6 +663,7 @@ async def _load_initial_balance():
     strategy_logger.info("기존 보유 잔고를 확인합니다...")
 
     old_condition_map = {}
+    old_overnight_map = {} # 🌟 [복구] 오버나잇 승인 여부 복구용
     RE_ENTRY_COOLDOWN = {}
 
     try:
@@ -701,6 +672,10 @@ async def _load_initial_balance():
             for code, info in old_data.get('trading_state', {}).items():
                 if info.get('condition_from') and info['condition_from'] != "기존보유":
                     old_condition_map[code] = info['condition_from']
+                # 🌟 [복구] 기존 상태에서 승인 플래그 읽기
+                if info.get('overnight_approved', False):
+                    old_overnight_map[code] = True
+
             saved_cooldowns = old_data.get('re_entry_cooldown', {})
             now = datetime.now()
             for code, t_str in saved_cooldowns.items():
@@ -738,7 +713,9 @@ async def _load_initial_balance():
                     "trailing_active": False, "peak_profit_rate": max(profit_rate, 0),
                     "status": "보유 (잔고)", "current_profit_rate": profit_rate,
                     "order_time": datetime.now(),
-                    "condition_from": restored_condition
+                    "condition_from": restored_condition,
+                    # 🌟 [복구] 오버나잇 플래그 복원
+                    "overnight_approved": old_overnight_map.get(stock_code, False)
                 }
                 initial_stocks.append((stock_code, "0B"))
             except: pass
@@ -978,14 +955,35 @@ async def try_market_close_liquidation():
 
         for stock_code, state in list(TRADING_STATE.items()):
             if "매도" in state.get('status', ''): continue
+            
+            # 이미 AI 승인으로 오버나잇이 결정된 경우 패스
+            if state.get('overnight_approved', False): continue
+
             cond_info = state.get('condition_from', '')
             cond_id = cond_info.split(':')[0] if ':' in cond_info else '999'
+            
+            # 기존 오버나잇 조건식인 경우 패스
             if cond_id in OVERNIGHT_CONDITION_IDS: continue
 
             stk_nm = state.get('stk_nm', stock_code)
             buy_qty = state.get('buy_qty', 0)
             if buy_qty > 0:
-                strategy_logger.info(f"📉 [강제청산] {stk_nm} 시장가 매도")
+                # 🌟 [수정] 무조건 매도가 아니라, AI 분석을 통해 살릴 수 있는지 확인
+                strategy_logger.info(f"🤖 [마감분석] {stk_nm}: 오버나잇 여부 AI 분석 중...")
+                
+                # "2"번 조건식(종가베팅) 기준으로 분석 요청
+                is_ok, _, ai_reason = await analyze_chart_pattern(stock_code, "2")
+                
+                if is_ok:
+                    # AI가 승인하면 매도하지 않고 '승인됨' 플래그 설정
+                    TRADING_STATE[stock_code]['overnight_approved'] = True
+                    strategy_logger.info(f"✅ [오버나잇 승인] {stk_nm} -> AI 홀딩 전환 ({ai_reason})")
+                    send_telegram_msg(f"🌙 <b>[오버나잇 승인]</b>\n종목: {stk_nm}\n사유: {ai_reason}\n➡️ 내일 시초가 매도 대상으로 전환됨")
+                    await save_status_to_file(force=True)
+                    continue  # 매도 로직 건너뜀
+
+                # 거절되면 매도 진행
+                strategy_logger.info(f"📉 [오버나잇 거절] {stk_nm} -> 청산 진행 ({ai_reason})")
                 ord_no = await run_blocking(fn_kt10001_sell_order, stock_code, buy_qty, price=0)
                 if ord_no:
                     TRADING_STATE[stock_code]['status'] = "매도주문중(일괄)"
@@ -1006,7 +1004,10 @@ async def try_morning_liquidation():
             cond_info = state.get('condition_from', '')
             cond_id = cond_info.split(':')[0] if ':' in cond_info else '999'
 
-            if cond_id in OVERNIGHT_CONDITION_IDS:
+            # 🌟 [수정] 오버나잇 조건식 이거나, 어제 AI가 승인한 종목이면 시초가 대응
+            is_target = (cond_id in OVERNIGHT_CONDITION_IDS) or state.get('overnight_approved', False)
+
+            if is_target:
                 stk_nm = state.get('stk_nm', stock_code)
                 buy_qty = state.get('buy_qty', 0)
                 buy_price = state.get('buy_price', 0)
