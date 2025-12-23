@@ -346,7 +346,8 @@ def is_market_open():
             return start <= current_time <= end
         return False
 
-async def analyze_chart_pattern(stock_code, condition_id="0"):
+# 🌟 [수정] stock_name 인자 추가
+async def analyze_chart_pattern(stock_code, stock_name, condition_id="0"):
     try:
         # 1. 3분봉 데이터 조회 (여유 있게 60개 요청)
         chart_data = await run_blocking(fn_ka10080_get_minute_chart, stock_code, tick="3")
@@ -397,8 +398,8 @@ async def analyze_chart_pattern(stock_code, condition_id="0"):
         total_len = high_p - low_p
         upper_shadow = high_p - max(close_p, open_p)
 
-        # 🚫 조건 B: 윗꼬리가 전체 길이의 50% 이상이면 위험 (매도세 강력)
-        if total_len > 0 and (upper_shadow / total_len) > 0.5:
+        # 🚫 조건 B: 윗꼬리가 전체 길이의 40% 이상이면 위험 (매도세 강력)
+        if total_len > 0 and (upper_shadow / total_len) > 0.4:
             strategy_logger.info(f"🛡️ [기술적필터] {stock_code}: 윗꼬리 과다({upper_shadow/total_len:.2f}) -> 진입 포기")
             return False, None, "윗꼬리 과다"
 
@@ -415,19 +416,21 @@ async def analyze_chart_pattern(stock_code, condition_id="0"):
         # ---------------------------------------------------------
         # 🤖 [3차 필터] AI 이미지 분석 (최종 관문)
         # ---------------------------------------------------------
-        stk_nm = "Stock" # 호출처에서 이름을 알 수 없으면 기본값, 가능하다면 인자로 받기 추천
+        # [수정] 전달받은 stock_name 사용
         
         # AI에게 보낼 이미지는 다시 원본 데이터 형태(리스트)를 기반으로 생성하거나 DF 활용
         # create_chart_image 함수가 리스트를 기대하므로 원본 chart_data 전달
-        image_path = await run_blocking(create_chart_image, stock_code, stk_nm, chart_data)
+        image_path = await run_blocking(create_chart_image, stock_code, stock_name, chart_data)
         
         if image_path:
             is_buy, reason = await run_blocking(ask_ai_to_buy, image_path, condition_id)
             if is_buy:
-                strategy_logger.info(f"🤖 [AI승인] {stock_code}: 매수 추천! ({reason})")
+                # [수정] 로그에 종목명(stock_name) 표시
+                strategy_logger.info(f"🤖 [AI승인] {stock_name} ({stock_code}): 매수 추천! ({reason})")
                 return True, image_path, reason
             else:
-                strategy_logger.info(f"🛡️ [AI거절] {stock_code}: 매수 보류 ({reason})")
+                # [수정] 로그에 종목명(stock_name) 표시
+                strategy_logger.info(f"🛡️ [AI거절] {stock_name} ({stock_code}): 매수 보류 ({reason})")
                 try: os.remove(image_path)
                 except: pass
                 return False, None, reason
@@ -864,7 +867,8 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                      return
 
             await GLOBAL_API_LIMITER.wait()
-            is_good_chart, image_path, ai_reason = await analyze_chart_pattern(stock_code, condition_id)
+            # [수정] stk_nm 인자 전달
+            is_good_chart, image_path, ai_reason = await analyze_chart_pattern(stock_code, stk_nm, condition_id)
             
             if not is_good_chart:
                 RE_ENTRY_COOLDOWN[stock_code] = datetime.now() + timedelta(minutes=10)
@@ -971,8 +975,8 @@ async def try_market_close_liquidation():
                 # 🌟 [수정] 무조건 매도가 아니라, AI 분석을 통해 살릴 수 있는지 확인
                 strategy_logger.info(f"🤖 [마감분석] {stk_nm}: 오버나잇 여부 AI 분석 중...")
                 
-                # "2"번 조건식(종가베팅) 기준으로 분석 요청
-                is_ok, _, ai_reason = await analyze_chart_pattern(stock_code, "2")
+                # [수정] stk_nm 인자 전달
+                is_ok, _, ai_reason = await analyze_chart_pattern(stock_code, stk_nm, "2")
                 
                 if is_ok:
                     # AI가 승인하면 매도하지 않고 '승인됨' 플래그 설정
