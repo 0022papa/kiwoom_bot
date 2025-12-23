@@ -70,12 +70,10 @@ except AttributeError: pass
 
 strategy_logger = logging.getLogger("Strategy")
 
-# 🌟 [신규] DB 로깅 핸들러 정의
 class DBLoggingHandler(logging.Handler):
     def emit(self, record):
         try:
             msg = self.format(record)
-            # DB 저장 (안전하게 처리)
             db.save_system_log(record.levelname, msg, record.name)
         except Exception:
             self.handleError(record)
@@ -346,16 +344,15 @@ def is_market_open():
             return start <= current_time <= end
         return False
 
-# 🌟 [수정] stock_name 인자 추가
+# 🌟 [수정] AI 손절가(ai_sl_price) 리턴 추가
 async def analyze_chart_pattern(stock_code, stock_name, condition_id="0"):
     try:
-        # 1. 3분봉 데이터 조회 (여유 있게 60개 요청)
+        # 1. 3분봉 데이터 조회
         chart_data = await run_blocking(fn_ka10080_get_minute_chart, stock_code, tick="3")
         if not chart_data or len(chart_data) < 30: 
-            return True, None, None  # 데이터 부족 시 일단 통과 (AI 판단 맡김) 또는 보수적이면 False
+            return True, None, None, 0  # 데이터 부족 시
 
-        # 2. 데이터 프레임 변환 및 전처리 (수치 분석용)
-        # 키움 데이터는 문자열이므로 숫자로 변환 필요
+        # 2. 데이터 프레임 변환
         df = pd.DataFrame(chart_data)
         df['close'] = df['cur_prc'].apply(lambda x: abs(int(x)) if x else 0)
         df['open'] = df['open_pric'].apply(lambda x: abs(int(x)) if x else 0)
@@ -363,84 +360,67 @@ async def analyze_chart_pattern(stock_code, stock_name, condition_id="0"):
         df['low'] = df['low_pric'].apply(lambda x: abs(int(x)) if x else 0)
         df['volume'] = df['trde_qty'].apply(lambda x: int(x) if x else 0)
         
-        # 키움 API는 최신 데이터가 인덱스 0번에 위치함 (과거 -> 최신 순 정렬 필요 시 ::-1)
-        # 분석 편의를 위해 최신이 맨 뒤로 가게 정렬 (시간 오름차순)
         df = df.iloc[::-1].reset_index(drop=True)
 
         # ---------------------------------------------------------
-        # 🛡️ [2차 필터] 기술적 지표 계산 (Programmatic Filter)
+        # 🛡️ [2차 필터] 기술적 지표 계산
         # ---------------------------------------------------------
         
-        # (1) 이동평균선 계산
         df['MA5'] = df['close'].rolling(window=5).mean()
         df['MA20'] = df['close'].rolling(window=20).mean()
         
-        current_idx = len(df) - 1 # 현재 진행 중인 캔들
-        last_complete_idx = len(df) - 2 # 직전 완성 캔들
+        current_idx = len(df) - 1
+        last_complete_idx = len(df) - 2
 
         current_close = df.loc[current_idx, 'close']
         ma5 = df.loc[current_idx, 'MA5']
         ma20 = df.loc[current_idx, 'MA20']
         
-        # 🚫 조건 A: 역배열 필터링 (현재가가 20일 이평선보다 아래면 진입 금지)
         if current_close < ma20:
             strategy_logger.info(f"🛡️ [기술적필터] {stock_code}: 추세 이탈 (현재가 < 20이평) -> 진입 포기")
-            return False, None, "추세 이탈(역배열)"
+            return False, None, "추세 이탈(역배열)", 0
 
-        # (2) 윗꼬리 계산 (기존 로직 고도화)
-        last_candle = df.loc[last_complete_idx] # 완성된 봉 기준 분석
+        last_candle = df.loc[last_complete_idx]
         open_p = last_candle['open']
         close_p = last_candle['close']
         high_p = last_candle['high']
         low_p = last_candle['low']
 
-        body_len = abs(close_p - open_p)
         total_len = high_p - low_p
         upper_shadow = high_p - max(close_p, open_p)
 
-        # 🚫 조건 B: 윗꼬리가 전체 길이의 40% 이상이면 위험 (매도세 강력)
         if total_len > 0 and (upper_shadow / total_len) > 0.4:
             strategy_logger.info(f"🛡️ [기술적필터] {stock_code}: 윗꼬리 과다({upper_shadow/total_len:.2f}) -> 진입 포기")
-            return False, None, "윗꼬리 과다"
+            return False, None, "윗꼬리 과다", 0
 
-        # (3) 거래량 급감 필터 (옵션)
-        # 최근 5개 봉 평균 거래량보다 현재 거래량이 너무 적으면(관심 소멸) 패스
         avg_vol_5 = df['volume'].iloc[-6:-1].mean()
         current_vol = df.loc[current_idx, 'volume']
         
-        # 장 초반이나 특정 상황 제외하고, 거래량이 평소의 30%도 안되면 의심
         if avg_vol_5 > 0 and current_vol < (avg_vol_5 * 0.3):
-             # 단, 가격이 급등 중이라면 거래량 적어도 ok일 수 있으므로 로깅만 하거나 보수적이면 리턴
              pass 
 
         # ---------------------------------------------------------
-        # 🤖 [3차 필터] AI 이미지 분석 (최종 관문)
+        # 🤖 [3차 필터] AI 이미지 분석
         # ---------------------------------------------------------
-        # [수정] 전달받은 stock_name 사용
-        
-        # AI에게 보낼 이미지는 다시 원본 데이터 형태(리스트)를 기반으로 생성하거나 DF 활용
-        # create_chart_image 함수가 리스트를 기대하므로 원본 chart_data 전달
         image_path = await run_blocking(create_chart_image, stock_code, stock_name, chart_data)
         
         if image_path:
-            is_buy, reason = await run_blocking(ask_ai_to_buy, image_path, condition_id)
+            # 🌟 [수정] AI에게서 손절가(ai_sl_price)도 받아옴
+            is_buy, reason, ai_sl_price = await run_blocking(ask_ai_to_buy, image_path, condition_id)
             if is_buy:
-                # [수정] 로그에 종목명(stock_name) 표시
-                strategy_logger.info(f"🤖 [AI승인] {stock_name} ({stock_code}): 매수 추천! ({reason})")
-                return True, image_path, reason
+                strategy_logger.info(f"🤖 [AI승인] {stock_name} ({stock_code}): 매수 추천! ({reason}) [AI손절가: {ai_sl_price}]")
+                return True, image_path, reason, ai_sl_price
             else:
-                # [수정] 로그에 종목명(stock_name) 표시
                 strategy_logger.info(f"🛡️ [AI거절] {stock_name} ({stock_code}): 매수 보류 ({reason})")
                 try: os.remove(image_path)
                 except: pass
-                return False, None, reason
+                return False, None, reason, 0
         
-        return True, None, None
+        return True, None, None, 0
 
     except Exception as e:
         strategy_logger.error(f"차트 분석 중 오류 ({stock_code}): {e}")
-        # 오류 발생 시 안전하게 False 반환 (무작정 매수 방지)
-        return False, None, f"분석 오류: {e}"
+        return False, None, f"분석 오류: {e}", 0
         
 async def apply_condition_preset(target_id):
     if target_id in STRATEGY_PRESETS:
@@ -612,6 +592,10 @@ async def save_status_to_file(force=False):
                 'ts_start': BOT_SETTINGS.get('TRAILING_START_RATE'),
                 'ts_stop': BOT_SETTINGS.get('TRAILING_STOP_RATE')
             }
+            # 🌟 AI가 정한 손절률이 있으면 정보에 추가
+            if 'custom_sl_rate' in info:
+                info_copy['applied_strategy']['custom_sl'] = info['custom_sl_rate']
+            
             enriched_state[code] = info_copy
 
             if "보유" in info.get('status', ''):
@@ -666,7 +650,7 @@ async def _load_initial_balance():
     strategy_logger.info("기존 보유 잔고를 확인합니다...")
 
     old_condition_map = {}
-    old_overnight_map = {} # 🌟 [복구] 오버나잇 승인 여부 복구용
+    old_overnight_map = {}
     RE_ENTRY_COOLDOWN = {}
 
     try:
@@ -675,7 +659,6 @@ async def _load_initial_balance():
             for code, info in old_data.get('trading_state', {}).items():
                 if info.get('condition_from') and info['condition_from'] != "기존보유":
                     old_condition_map[code] = info['condition_from']
-                # 🌟 [복구] 기존 상태에서 승인 플래그 읽기
                 if info.get('overnight_approved', False):
                     old_overnight_map[code] = True
 
@@ -717,7 +700,6 @@ async def _load_initial_balance():
                     "status": "보유 (잔고)", "current_profit_rate": profit_rate,
                     "order_time": datetime.now(),
                     "condition_from": restored_condition,
-                    # 🌟 [복구] 오버나잇 플래그 복원
                     "overnight_approved": old_overnight_map.get(stock_code, False)
                 }
                 initial_stocks.append((stock_code, "0B"))
@@ -840,7 +822,6 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
 
             if current_price <= 0:
                 strategy_logger.warning(f"❌ {stk_nm}({stock_code}) 가격 정보 없음. 스킵.")
-                # 🌟 [수정] 가격 정보 없으면 잠시 쿨다운 (API 낭비 방지)
                 RE_ENTRY_COOLDOWN[stock_code] = datetime.now() + timedelta(minutes=1)
                 return
 
@@ -854,21 +835,19 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                         ratio = buy_total / sell_total
                         if ratio < min_ratio:
                             strategy_logger.info(f"🛡️ [호가필터] {stk_nm} 진입 금지 (비율: {ratio:.2f})")
-                            # 🌟 [수정] 호가 필터 탈락 시 쿨다운 설정 (5분)
                             RE_ENTRY_COOLDOWN[stock_code] = datetime.now() + timedelta(minutes=5)
                             return
                     else:
-                         # 🌟 [수정] 호가 데이터 이상 시 쿨다운
                          RE_ENTRY_COOLDOWN[stock_code] = datetime.now() + timedelta(minutes=1)
                          return
                 else:
-                     # 🌟 [수정] 호가 데이터 조회 실패 시 쿨다운
                      RE_ENTRY_COOLDOWN[stock_code] = datetime.now() + timedelta(minutes=1)
                      return
 
             await GLOBAL_API_LIMITER.wait()
-            # [수정] stk_nm 인자 전달
-            is_good_chart, image_path, ai_reason = await analyze_chart_pattern(stock_code, stk_nm, condition_id)
+            
+            # 🌟 [수정] AI 손절가(ai_sl_price)도 받아오도록 변경
+            is_good_chart, image_path, ai_reason, ai_sl_price = await analyze_chart_pattern(stock_code, stk_nm, condition_id)
             
             if not is_good_chart:
                 RE_ENTRY_COOLDOWN[stock_code] = datetime.now() + timedelta(minutes=10)
@@ -881,9 +860,20 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                     except: pass
                 return
 
+            # 🌟 [신규] AI가 제시한 손절가를 퍼센트(%)로 변환
+            default_sl_rate = float(BOT_SETTINGS.get('STOP_LOSS_RATE') or -1.5)
+            final_sl_rate = default_sl_rate
+
+            if ai_sl_price > 0 and current_price > 0:
+                calc_rate = ((ai_sl_price - current_price) / current_price) * 100
+                # 안전장치: -10%보다 더 크거나(너무 깊음), 양수(익절가격)면 기본값 사용
+                if -10.0 <= calc_rate < 0:
+                    final_sl_rate = round(calc_rate, 2)
+                    strategy_logger.info(f"🤖 [AI전략] {stk_nm}: AI 지정 손절가 {ai_sl_price}원 반영 -> 손절선 {final_sl_rate}% 설정")
+
             BUY_ATTEMPT_HISTORY[stock_code] = datetime.now()
 
-            strategy_logger.info(f"🚀 [주문전송] {stk_nm} / {buy_qty}주 / 시장가")
+            strategy_logger.info(f"🚀 [주문전송] {stk_nm} / {buy_qty}주 / 시장가 / 예상손절 {final_sl_rate}%")
             cond_info_str = f"{condition_id}:{current_cond_name}"
             PENDING_ORDER_CONDITIONS[stock_code] = cond_info_str
 
@@ -897,7 +887,8 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                     "status": "매수주문", "current_profit_rate": 0.0,
                     "order_time": datetime.now(),
                     "condition_from": cond_info_str,
-                    "ord_no": ord_no
+                    "ord_no": ord_no,
+                    "custom_sl_rate": final_sl_rate  # 🌟 저장: AI가 정한 손절률
                 }
                 ws_manager.add_subscription(stock_code, "0B")
                 strategy_logger.info(f"✅ [주문성공] 주문번호: {ord_no}")
@@ -960,33 +951,28 @@ async def try_market_close_liquidation():
         for stock_code, state in list(TRADING_STATE.items()):
             if "매도" in state.get('status', ''): continue
             
-            # 이미 AI 승인으로 오버나잇이 결정된 경우 패스
             if state.get('overnight_approved', False): continue
 
             cond_info = state.get('condition_from', '')
             cond_id = cond_info.split(':')[0] if ':' in cond_info else '999'
             
-            # 기존 오버나잇 조건식인 경우 패스
             if cond_id in OVERNIGHT_CONDITION_IDS: continue
 
             stk_nm = state.get('stk_nm', stock_code)
             buy_qty = state.get('buy_qty', 0)
             if buy_qty > 0:
-                # 🌟 [수정] 무조건 매도가 아니라, AI 분석을 통해 살릴 수 있는지 확인
                 strategy_logger.info(f"🤖 [마감분석] {stk_nm}: 오버나잇 여부 AI 분석 중...")
                 
-                # [수정] stk_nm 인자 전달
-                is_ok, _, ai_reason = await analyze_chart_pattern(stock_code, stk_nm, "2")
+                # [수정] 리턴값 개수 맞춤 (4개)
+                is_ok, _, ai_reason, _ = await analyze_chart_pattern(stock_code, stk_nm, "2")
                 
                 if is_ok:
-                    # AI가 승인하면 매도하지 않고 '승인됨' 플래그 설정
                     TRADING_STATE[stock_code]['overnight_approved'] = True
                     strategy_logger.info(f"✅ [오버나잇 승인] {stk_nm} -> AI 홀딩 전환 ({ai_reason})")
                     send_telegram_msg(f"🌙 <b>[오버나잇 승인]</b>\n종목: {stk_nm}\n사유: {ai_reason}\n➡️ 내일 시초가 매도 대상으로 전환됨")
                     await save_status_to_file(force=True)
-                    continue  # 매도 로직 건너뜀
+                    continue 
 
-                # 거절되면 매도 진행
                 strategy_logger.info(f"📉 [오버나잇 거절] {stk_nm} -> 청산 진행 ({ai_reason})")
                 ord_no = await run_blocking(fn_kt10001_sell_order, stock_code, buy_qty, price=0)
                 if ord_no:
@@ -1008,7 +994,6 @@ async def try_morning_liquidation():
             cond_info = state.get('condition_from', '')
             cond_id = cond_info.split(':')[0] if ':' in cond_info else '999'
 
-            # 🌟 [수정] 오버나잇 조건식 이거나, 어제 AI가 승인한 종목이면 시초가 대응
             is_target = (cond_id in OVERNIGHT_CONDITION_IDS) or state.get('overnight_approved', False)
 
             if is_target:
@@ -1094,7 +1079,8 @@ async def manage_open_positions():
     global TRADING_STATE, RE_ENTRY_COOLDOWN, LAST_PRICE_CHECK_TIME, LAST_API_CALL_TIME
     if not TRADING_STATE: return
 
-    apply_sl = float(BOT_SETTINGS.get('STOP_LOSS_RATE') or -1.5)
+    # 전역 설정값
+    global_sl = float(BOT_SETTINGS.get('STOP_LOSS_RATE') or -1.5)
     apply_ts_start = float(BOT_SETTINGS.get('TRAILING_START_RATE') or 1.5)
     apply_ts_stop = float(BOT_SETTINGS.get('TRAILING_STOP_RATE') or -1.0)
     cooldown_min = BOT_SETTINGS.get('RE_ENTRY_COOLDOWN_MIN') or 30
@@ -1143,8 +1129,14 @@ async def manage_open_positions():
 
             if not is_auto_sell_on: continue
 
+            # 🌟 [수정] 종목별 개별 AI 손절가 적용 (없으면 전역 설정 사용)
+            apply_sl = state.get('custom_sl_rate', global_sl)
+
             sell_reason = None
-            if profit_rate <= apply_sl: sell_reason = f"손절 ({profit_rate:.2f}%)"
+            if profit_rate <= apply_sl: 
+                # 로그에 AI 지정인지 표시
+                msg_type = "AI지정" if 'custom_sl_rate' in state else "설정"
+                sell_reason = f"손절({msg_type}) ({profit_rate:.2f}%)"
 
             if not sell_reason:
                 if not state.get('trailing_active', False):
@@ -1233,7 +1225,7 @@ def setup_logging(debug_mode=False):
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
 
-    # 🌟 3. DB 핸들러 추가
+    # 3. DB 핸들러 추가
     db_handler = DBLoggingHandler()
     db_handler.setFormatter(console_formatter)
     logger.addHandler(db_handler)
@@ -1269,7 +1261,6 @@ async def main():
 
     await run_self_diagnosis()
 
-    # 🌟 [추가] 봇 시작 시 오래된 DB 데이터 정리 (기본 7일)
     try:
         del_trades, del_logs = await run_blocking(db.cleanup_old_data, 7)
         if del_trades > 0 or del_logs > 0:
@@ -1316,7 +1307,6 @@ async def main():
 
     while not stop_event.is_set():
         try:
-            # DB 명령 큐 확인
             command = await run_blocking(db.pop_command)
             if command:
                 if command['cmd_type'] == 'BULK_SELL':
@@ -1341,10 +1331,8 @@ async def main():
                 await save_status_to_file(force=True)
                 last_force_save = datetime.now()
 
-            # 🌟 일별 리포트 전송 (DB 체크)
             try:
                 now = datetime.now()
-                # 15시 40분 ~ 49분 사이에만 체크
                 if now.hour == 15 and 40 <= now.minute < 50:
                     today_str = now.strftime('%Y-%m-%d')
                     last_sent_date = await run_blocking(db.get_kv, "last_daily_report_date")
@@ -1387,9 +1375,8 @@ async def main():
                 current_time = datetime.now().time()
                 market_start_guard = datetime.strptime("09:00:30", "%H:%M:%S").time()
                 
-                # 🌟 [수정됨] 장 시작 직후(09:00:00~09:00:30)에도 시초가 매도 로직 실행
                 if current_time < market_start_guard:
-                    await try_morning_liquidation() # <-- 🌟 이 부분 추가됨
+                    await try_morning_liquidation()
                     await manage_open_positions()
                     await save_status_to_file()
                     await asyncio.sleep(1)
