@@ -1312,7 +1312,10 @@ async def main():
 
                 current_time = datetime.now().time()
                 market_start_guard = datetime.strptime("09:00:30", "%H:%M:%S").time()
+                
+                # 🌟 [수정됨] 장 시작 직후(09:00:00~09:00:30)에도 시초가 매도 로직 실행
                 if current_time < market_start_guard:
+                    await try_morning_liquidation() # <-- 🌟 이 부분 추가됨
                     await manage_open_positions()
                     await save_status_to_file()
                     await asyncio.sleep(1)
