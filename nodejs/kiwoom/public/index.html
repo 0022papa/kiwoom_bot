@@ -48,6 +48,35 @@
         .log-WARNING { color: #dcdcaa; }
         .log-ERROR { color: #f44747; font-weight: bold; }
         .log-DEBUG { color: #6a9955; }
+
+        /* Click-to-Edit 스타일 (심플 버전) */
+        .click-edit-input {
+            background-color: transparent; /* 평소엔 투명 */
+            border: 1px solid transparent;
+            border-radius: 0.375rem; /* rounded-md */
+            transition: all 0.2s;
+            cursor: pointer;
+            text-align: right; /* 숫자가 오른쪽 정렬되어 깔끔하게 보이도록 */
+        }
+        .click-edit-input:hover {
+            background-color: rgba(0, 0, 0, 0.05); /* 마우스 올리면 살짝 회색 */
+        }
+        .dark .click-edit-input:hover {
+            background-color: rgba(255, 255, 255, 0.1);
+        }
+        .click-edit-input:focus {
+            background-color: white;
+            border-color: #3b82f6; /* blue-500 */
+            cursor: text;
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+            text-align: left; /* 입력 할 때는 왼쪽 정렬 (원하면 right 유지 가능) */
+        }
+        .dark .click-edit-input:focus {
+            background-color: #1e293b; /* slate-800 */
+            border-color: #3b82f6;
+            color: white;
+        }
     </style>
 </head>
 <body class="bg-slate-100 dark:bg-slate-900 text-slate-900 dark:text-slate-100 min-h-screen transition-colors duration-200">
@@ -75,7 +104,7 @@
 
             <div class="space-y-6 lg:col-span-1"> 
                 <div class="p-6 bg-white dark:bg-slate-800 rounded-2xl shadow-lg border border-slate-200 dark:border-slate-700 transition-colors">
-                    <h2 class="text-xl font-bold mb-4 flex items-center"><span>상태 모니터</span></h2>
+                    <h2 class="text-xl font-bold mb-4 flex items-center"><span>상태 모니터 & 설정</span></h2>
                     <div class="mb-6">
                         <div id="status-container" class="flex flex-col items-center justify-center p-6 bg-slate-100 dark:bg-slate-700 rounded-xl transition-all duration-300 border-2 border-transparent">
                             <div id="status-light" class="w-6 h-6 rounded-full bg-gray-400 mb-2 shadow-lg transition-all duration-500"></div>
@@ -121,13 +150,15 @@
                             
                             <div id="ai-safety-box" class="hidden mt-2 border-t border-indigo-200 dark:border-indigo-700 pt-2">
                                 <div class="flex justify-between items-center">
-                                    <label for="AI_STOP_LOSS_SAFETY_LIMIT" class="text-xs font-bold text-indigo-700 dark:text-indigo-300">📉 안전장치 한계 (%)</label>
-                                    <div class="flex items-center w-1/2">
-                                        <input type="number" step="0.1" id="AI_STOP_LOSS_SAFETY_LIMIT" name="AI_STOP_LOSS_SAFETY_LIMIT" class="w-full p-1.5 border border-indigo-300 dark:border-indigo-600 rounded text-xs text-right focus:ring-2 focus:ring-indigo-500 outline-none dark:bg-slate-800 dark:text-white" placeholder="-5.0">
+                                    <label for="AI_STOP_LOSS_SAFETY_LIMIT" class="text-xs font-bold text-indigo-700 dark:text-indigo-300">
+                                        📉 안전장치 한계 (%)
+                                    </label>
+                                    <div class="w-1/2">
+                                        <input type="number" step="0.1" id="AI_STOP_LOSS_SAFETY_LIMIT" name="AI_STOP_LOSS_SAFETY_LIMIT" class="click-edit-input w-full p-1.5 text-xs font-bold text-indigo-600 dark:text-indigo-300" placeholder="-5.0">
                                     </div>
                                 </div>
                                 <p class="text-[10px] text-indigo-500 dark:text-indigo-400 mt-1 leading-tight">
-                                    * AI 손절가가 이 값보다 더 낮으면(위험하면) 무시하고 기본 손절가를 사용합니다.
+                                    * AI 판단이 이 값보다 낮으면 무시
                                 </p>
                             </div>
                         </div>
@@ -151,7 +182,7 @@
                         <div class="border border-blue-200 dark:border-blue-800 rounded-lg p-3 bg-blue-50 dark:bg-blue-900/20 transition-all">
                             <div class="flex items-center justify-between mb-2">
                                 <div>
-                                    <label for="USE_SCHEDULER" class="text-sm font-bold text-blue-800 dark:text-blue-200 cursor-pointer select-none">⏰ 오전/점심/오후 변경</label>
+                                    <label for="USE_SCHEDULER" class="text-sm font-bold text-blue-800 dark:text-blue-200 cursor-pointer select-none">⏰ 스케줄링</label>
                                 </div>
                                 <div class="relative inline-block w-10 mr-2 align-middle select-none transition duration-200 ease-in">
                                     <input type="checkbox" name="USE_SCHEDULER" id="USE_SCHEDULER" class="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
@@ -162,7 +193,7 @@
                                 <div class="col-span-1"><label class="block text-xs text-slate-500 mb-1">오전 시작</label><input type="time" id="MORNING_START" name="MORNING_START" class="w-full p-1.5 border rounded text-xs bg-white dark:bg-slate-800 dark:border-slate-600 dark:text-white"></div>
                                 <div class="col-span-1"><label class="block text-xs text-slate-500 mb-1">오전 조건식</label><select id="MORNING_COND" name="MORNING_COND" class="w-full p-1.5 border rounded text-xs bg-white dark:bg-slate-800 dark:border-slate-600 dark:text-white"></select></div>
                                 
-                                <div class="col-span-1"><label class="block text-xs text-slate-500 mb-1">점심(중간) 시작</label><input type="time" id="LUNCH_START" name="LUNCH_START" class="w-full p-1.5 border rounded text-xs bg-white dark:bg-slate-800 dark:border-slate-600 dark:text-white"></div>
+                                <div class="col-span-1"><label class="block text-xs text-slate-500 mb-1">점심 시작</label><input type="time" id="LUNCH_START" name="LUNCH_START" class="w-full p-1.5 border rounded text-xs bg-white dark:bg-slate-800 dark:border-slate-600 dark:text-white"></div>
                                 <div class="col-span-1"><label class="block text-xs text-slate-500 mb-1">점심 조건식</label><select id="LUNCH_COND" name="LUNCH_COND" class="w-full p-1.5 border rounded text-xs bg-white dark:bg-slate-800 dark:border-slate-600 dark:text-white"></select></div>
 
                                 <div class="col-span-1"><label class="block text-xs text-slate-500 mb-1">오후 시작</label><input type="time" id="AFTERNOON_START" name="AFTERNOON_START" class="w-full p-1.5 border rounded text-xs bg-white dark:bg-slate-800 dark:border-slate-600 dark:text-white"></div>
@@ -183,27 +214,44 @@
                         </div>
                         
                         <div class="grid grid-cols-2 gap-4">
-                            <div><label class="block text-sm font-medium mb-1 text-slate-600 dark:text-slate-400">1회 매수(원)</label><input type="number" id="ORDER_AMOUNT" name="ORDER_AMOUNT" class="w-full p-2.5 border rounded-lg bg-slate-50 dark:bg-slate-700"></div>
-                            <div><label class="block text-sm font-medium mb-1 text-slate-600 dark:text-slate-400">쿨다운(분)</label><input type="number" id="RE_ENTRY_COOLDOWN_MIN" name="RE_ENTRY_COOLDOWN_MIN" class="w-full p-2.5 border rounded-lg bg-slate-50 dark:bg-slate-700"></div>
+                            <div class="bg-slate-50 dark:bg-slate-700/50 rounded-lg p-2 border border-slate-200 dark:border-slate-600">
+                                <label class="block text-xs text-slate-500 dark:text-slate-400 mb-1">1회 매수금(원)</label>
+                                <input type="number" id="ORDER_AMOUNT" name="ORDER_AMOUNT" class="click-edit-input w-full p-1 text-sm font-bold bg-transparent" placeholder="1000000">
+                            </div>
+                            <div class="bg-slate-50 dark:bg-slate-700/50 rounded-lg p-2 border border-slate-200 dark:border-slate-600">
+                                <label class="block text-xs text-slate-500 dark:text-slate-400 mb-1">쿨다운(분)</label>
+                                <input type="number" id="RE_ENTRY_COOLDOWN_MIN" name="RE_ENTRY_COOLDOWN_MIN" class="click-edit-input w-full p-1 text-sm font-bold bg-transparent" placeholder="10">
+                            </div>
                         </div>
 
                         <div class="p-3 bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600">
-                            <label for="MIN_BUY_SELL_RATIO" class="block text-sm font-bold text-slate-700 dark:text-slate-200 mb-1">호가 비율 필터</label>
-                            <input type="number" step="0.1" min="0" id="MIN_BUY_SELL_RATIO" name="MIN_BUY_SELL_RATIO" class="w-full p-2 border rounded-lg bg-white dark:bg-slate-800 text-sm">
-                            <p class="text-xs text-slate-500 mt-1">기본값 0.5 (높을수록 안전)</p>
+                            <label for="MIN_BUY_SELL_RATIO" class="flex justify-between text-sm font-bold text-slate-700 dark:text-slate-200 mb-1">
+                                <span>호가 비율 필터</span>
+                            </label>
+                            <input type="number" step="0.1" min="0" id="MIN_BUY_SELL_RATIO" name="MIN_BUY_SELL_RATIO" class="click-edit-input w-full p-2 text-sm font-bold bg-transparent" placeholder="0.5">
+                            <p class="text-xs text-slate-500 mt-1">높을수록 매수세가 강한 종목만 매수</p>
                         </div>
 
                         <div class="p-3 bg-purple-50 dark:bg-purple-900/20 rounded-lg border border-purple-200 dark:border-purple-700/50">
                             <label for="OVERNIGHT_COND_IDS" class="block text-sm font-bold text-purple-800 dark:text-purple-200 mb-1">오버나잇 조건식</label>
-                            <input type="text" id="OVERNIGHT_COND_IDS" name="OVERNIGHT_COND_IDS" placeholder="예: 2, 5" class="w-full p-2 border rounded-lg bg-white dark:bg-slate-800 text-sm">
+                            <input type="text" id="OVERNIGHT_COND_IDS" name="OVERNIGHT_COND_IDS" placeholder="예: 2, 5" class="click-edit-input w-full p-2 text-sm font-bold bg-transparent text-purple-700 dark:text-purple-300">
                         </div>
 
                         <div class="grid grid-cols-3 gap-2">
-                             <div><label class="block text-xs font-medium mb-1 text-red-500">손절(%)</label><input type="number" step="0.1" id="STOP_LOSS_RATE" name="STOP_LOSS_RATE" class="w-full p-2 border rounded-lg bg-slate-50 dark:bg-slate-700 text-sm"></div>
-                            <div><label class="block text-xs font-medium mb-1 text-green-500">익절시작(%)</label><input type="number" step="0.1" id="TRAILING_START_RATE" name="TRAILING_START_RATE" class="w-full p-2 border rounded-lg bg-slate-50 dark:bg-slate-700 text-sm"></div>
-                            <div><label class="block text-xs font-medium mb-1 text-orange-500">트레일링(%)</label><input type="number" step="0.1" id="TRAILING_STOP_RATE" name="TRAILING_STOP_RATE" class="w-full p-2 border rounded-lg bg-slate-50 dark:bg-slate-700 text-sm"></div>
+                             <div class="bg-red-50 dark:bg-red-900/10 rounded-lg p-2 border border-red-100 dark:border-red-900/30">
+                                 <label class="block text-xs font-medium mb-1 text-red-500">손절(%)</label>
+                                 <input type="number" step="0.1" id="STOP_LOSS_RATE" name="STOP_LOSS_RATE" class="click-edit-input w-full p-1 text-sm font-bold text-red-600 bg-transparent" placeholder="-2.0">
+                             </div>
+                            <div class="bg-green-50 dark:bg-green-900/10 rounded-lg p-2 border border-green-100 dark:border-green-900/30">
+                                <label class="block text-xs font-medium mb-1 text-green-500">익절시작(%)</label>
+                                <input type="number" step="0.1" id="TRAILING_START_RATE" name="TRAILING_START_RATE" class="click-edit-input w-full p-1 text-sm font-bold text-green-600 bg-transparent" placeholder="4.0">
+                            </div>
+                            <div class="bg-orange-50 dark:bg-orange-900/10 rounded-lg p-2 border border-orange-100 dark:border-orange-900/30">
+                                <label class="block text-xs font-medium mb-1 text-orange-500">트레일링(%)</label>
+                                <input type="number" step="0.1" id="TRAILING_STOP_RATE" name="TRAILING_STOP_RATE" class="click-edit-input w-full p-1 text-sm font-bold text-orange-600 bg-transparent" placeholder="1.5">
+                            </div>
                         </div>
-                        <button type="submit" class="w-full p-3 mt-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg shadow-md">설정 저장</button>
+                        <button type="submit" class="w-full p-3 mt-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg shadow-md transition-all active:scale-95">설정 저장</button>
                     </form>
                 </div>
             </div> 
@@ -479,7 +527,7 @@
         }
         schedulerCheck.addEventListener('change', toggleSchedulerUI);
 
-        // 🌟 [신규] AI 손절가 토글 처리
+        // AI 손절가 토글 처리
         const aiSlCheck = document.getElementById('USE_AI_STOP_LOSS');
         const aiSafetyBox = document.getElementById('ai-safety-box');
         function toggleAiSlUI() {
@@ -639,7 +687,7 @@
                             if (el.type === 'checkbox') {
                                 el.checked = data[key] !== false;
                                 if(key === 'USE_SCHEDULER') toggleSchedulerUI();
-                                if(key === 'USE_AI_STOP_LOSS') toggleAiSlUI(); // 🌟 추가
+                                if(key === 'USE_AI_STOP_LOSS') toggleAiSlUI(); 
                             }
                             else el.value = data[key];
                         }
@@ -653,7 +701,6 @@
                     USE_TELEGRAM: val => val ? '<span class="font-bold text-blue-500">🔔 ON</span>' : '<span class="font-bold text-slate-400">🔕 OFF</span>',
                     DEBUG_MODE: val => val ? '<span class="font-bold text-orange-500">🕵️ ON</span>' : '<span class="font-bold text-slate-400">🔒 OFF</span>',
                     USE_SCHEDULER: val => val ? '<span class="font-bold text-blue-500">⏰ ON</span>' : '<span class="font-bold text-slate-400">OFF</span>',
-                    // 🌟 [신규] AI 손절가 및 안전장치 요약 표시
                     USE_AI_STOP_LOSS: val => {
                         if (!val) return '<span class="font-bold text-slate-400">⚙️ 설정값</span>';
                         const limit = data.AI_STOP_LOSS_SAFETY_LIMIT || -5.0;
@@ -731,11 +778,10 @@
                             : (trade.action === 'SELL' 
                                 ? '<span class="px-2 py-0.5 rounded text-xs font-bold bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">매도</span>' 
                                 : '<span class="px-2 py-0.5 rounded text-xs font-bold bg-gray-100 text-gray-600">기타</span>');
-                        const profit = parseFloat(trade.profit_rate || 0); // profit -> profit_rate로 수정
+                        const profit = parseFloat(trade.profit_rate || 0);
                         const profitColor = profit > 0 ? 'text-red-500' : (profit < 0 ? 'text-blue-500' : 'text-slate-400');
                         const profitText = trade.action === 'SELL' ? `<span class="font-bold ${profitColor}">${profit.toFixed(2)}%</span>` : '';
                         
-                        // AI 분석 내용 표시용 (툴팁 혹은 별도 표시)
                         let aiReasonHtml = '';
                         if (trade.ai_reason && trade.ai_reason !== 'None' && trade.ai_reason !== '') {
                             aiReasonHtml = `<div class="mt-1 text-xs text-indigo-500 dark:text-indigo-400 flex items-center gap-1" title="${trade.ai_reason}">
@@ -838,7 +884,6 @@
             settings.MOCK_TRADE = document.getElementById('MOCK_TRADE').checked;
             settings.USE_SCHEDULER = document.getElementById('USE_SCHEDULER').checked;
             
-            // 🌟 [신규] AI 손절가 토글 및 안전장치 값 전송
             settings.USE_AI_STOP_LOSS = document.getElementById('USE_AI_STOP_LOSS').checked;
             settings.AI_STOP_LOSS_SAFETY_LIMIT = parseFloat(settings.AI_STOP_LOSS_SAFETY_LIMIT || -5.0);
 

@@ -188,18 +188,19 @@ app.post('/api/settings', checkAuth, async (req, res) => {
         const settings = req.body;
         const parseNum = (val, def) => (isNaN(parseFloat(val)) ? def : parseFloat(val));
         
-        settings.ORDER_AMOUNT = parseNum(settings.ORDER_AMOUNT, 100000);
-        settings.STOP_LOSS_RATE = parseNum(settings.STOP_LOSS_RATE, -1.5);
-        settings.TRAILING_START_RATE = parseNum(settings.TRAILING_START_RATE, 1.5);
-        settings.TRAILING_STOP_RATE = parseNum(settings.TRAILING_STOP_RATE, -1.0);
-        settings.RE_ENTRY_COOLDOWN_MIN = parseNum(settings.RE_ENTRY_COOLDOWN_MIN, 30);
-        settings.MIN_BUY_SELL_RATIO = parseNum(settings.MIN_BUY_SELL_RATIO, 0.5);
+        // index.html의 UI 기본값과 일치하도록 업데이트
+        settings.ORDER_AMOUNT = parseNum(settings.ORDER_AMOUNT, 1000000);   // 기본 100만원
+        settings.STOP_LOSS_RATE = parseNum(settings.STOP_LOSS_RATE, -2.0);  // 기본 -2.0%
+        settings.TRAILING_START_RATE = parseNum(settings.TRAILING_START_RATE, 4.0); // 기본 4.0%
+        settings.TRAILING_STOP_RATE = parseNum(settings.TRAILING_STOP_RATE, 1.5);   // 기본 1.5% (트레일링 간격)
+        settings.RE_ENTRY_COOLDOWN_MIN = parseNum(settings.RE_ENTRY_COOLDOWN_MIN, 10); // 기본 10분
+        settings.MIN_BUY_SELL_RATIO = parseNum(settings.MIN_BUY_SELL_RATIO, 0.5);    // 기본 0.5
         
-        if(settings.OVERNIGHT_COND_IDS === undefined) settings.OVERNIGHT_COND_IDS = "2";
+        if(settings.OVERNIGHT_COND_IDS === undefined) settings.OVERNIGHT_COND_IDS = "";
         
-        // 🌟 [수정] AI 손절가 토글 및 안전장치 값 저장 로직 추가
-        if(settings.USE_AI_STOP_LOSS === undefined) settings.USE_AI_STOP_LOSS = true;
-        settings.AI_STOP_LOSS_SAFETY_LIMIT = parseNum(settings.AI_STOP_LOSS_SAFETY_LIMIT, -5.0);
+        // AI 손절가 및 안전장치 값 저장
+        if(settings.USE_AI_STOP_LOSS === undefined) settings.USE_AI_STOP_LOSS = true; // 기본값 ON
+        settings.AI_STOP_LOSS_SAFETY_LIMIT = parseNum(settings.AI_STOP_LOSS_SAFETY_LIMIT, -5.0); // 기본 -5.0%
 
         await setKV("settings", settings);
         res.json({ success: true, message: 'Settings saved' });
@@ -229,7 +230,7 @@ app.get('/api/trades', checkAuth, (req, res) => {
     });
 });
 
-// 🌟 [신규] 시스템 로그 조회 (DB)
+// 시스템 로그 조회 (DB)
 app.get('/api/logs', checkAuth, (req, res) => {
     db.all("SELECT * FROM system_logs ORDER BY id DESC LIMIT 200", [], (err, rows) => {
         if (err) res.json({ logs: [] });
@@ -268,7 +269,7 @@ app.post('/api/backtest/request', checkAuth, async (req, res) => {
             return res.status(400).json({ success: false, message: "No signals provided" });
         }
 
-        // 결과 초기화 (선택사항)
+        // 결과 초기화
         await setKV("backtest_result", null);
         
         await sendCommand("BACKTEST_REQ", { signals });

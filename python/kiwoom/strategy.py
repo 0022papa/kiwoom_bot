@@ -116,8 +116,10 @@ DEFAULT_SETTINGS = {
     "USE_HOGA_FILTER": True,
     "MIN_BUY_SELL_RATIO": 0.5,
     "OVERNIGHT_COND_IDS": "2",
-    "USE_AI_STOP_LOSS": True,       # AI 손절가 사용 여부 토글 (기본값: True)
-    "AI_STOP_LOSS_SAFETY_LIMIT": -5.0 # AI 손절가 안전장치 한계값 (기본값: -5%)
+    "USE_AI_STOP_LOSS": True,
+    "AI_STOP_LOSS_SAFETY_LIMIT": -5.0,
+    "TIME_CUT_MINUTES": 20, # 🌟 [신규 설정] 타임컷 (기본 20분)
+    "RSI_LIMIT": 75.0       # 🌟 [신규 설정] RSI 과매수 제한 (기본 75.0)
 }
 BOT_SETTINGS = DEFAULT_SETTINGS.copy()
 
@@ -352,7 +354,7 @@ def is_market_open():
             return start <= current_time <= end
         return False
 
-# 🌟 [수정] AI 손절가(ai_sl_price) 리턴 추가
+# 🌟 [수정] RSI 필터 적용
 async def analyze_chart_pattern(stock_code, stock_name, condition_id="0"):
     try:
         # 1. 3분봉 데이터 조회
@@ -387,6 +389,24 @@ async def analyze_chart_pattern(stock_code, stock_name, condition_id="0"):
         if current_close < ma20:
             strategy_logger.info(f"🛡️ [기술적필터] {stock_code}: 추세 이탈 (현재가 < 20이평) -> 진입 포기")
             return False, None, "추세 이탈(역배열)", 0
+
+        # 🌟 [신규] RSI 필터: 과매수 구간 진입 금지 (설정값 사용)
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        
+        # 0으로 나누는 오류 방지
+        rs = gain / loss.replace(0, 1) 
+        df['RSI'] = 100 - (100 / (1 + rs))
+        
+        current_rsi = df.loc[current_idx, 'RSI']
+        
+        # 설정된 RSI_LIMIT 값 가져오기
+        rsi_limit = float(BOT_SETTINGS.get('RSI_LIMIT') or 75.0)
+        
+        if current_rsi > rsi_limit:
+            strategy_logger.info(f"🛡️ [RSI필터] {stock_code}: 과매수 구간(RSI {current_rsi:.1f}) -> 진입 포기")
+            return False, None, "RSI 과열", 0
 
         last_candle = df.loc[last_complete_idx]
         open_p = last_candle['open']
@@ -547,9 +567,11 @@ async def load_settings_from_file():
             val = saved_settings.get(key)
             if key == "CONDITION_ID": val = str(val) if (val is not None and val != "") else "0"
             elif key == "USE_MARKET_TIME": val = bool(val) if val is not None else True
-            # 🌟 [추가] AI 손절가 토글 및 안전장치 값 파싱
+            # 🌟 [추가] AI 설정 및 타임컷, RSI 설정 파싱
             elif key == "USE_AI_STOP_LOSS": val = bool(val) if val is not None else True
             elif key == "AI_STOP_LOSS_SAFETY_LIMIT": val = float(val) if val is not None else -5.0
+            elif key == "TIME_CUT_MINUTES": val = int(val) if val is not None else 20
+            elif key == "RSI_LIMIT": val = float(val) if val is not None else 75.0
 
             if key in ["MORNING_START", "MORNING_COND", "LUNCH_START", "LUNCH_COND", "AFTERNOON_START", "AFTERNOON_COND", "OVERNIGHT_COND_IDS"]:
                  if val is not None: BOT_SETTINGS[key] = str(val)
@@ -601,7 +623,6 @@ async def save_status_to_file(force=False):
                 info_copy['last_cancel_try'] = info_copy['last_cancel_try'].strftime('%Y-%m-%d %H:%M:%S')
             
             # 🌟 [수정] 대시보드 표시용 데이터 구성
-            # AI 손절가(custom_sl_rate)가 있으면 그것을 'sl' 값으로 사용하여 대시보드에 우선 표시
             effective_sl = info.get('custom_sl_rate')
             if effective_sl is None:
                 effective_sl = BOT_SETTINGS.get('STOP_LOSS_RATE')
@@ -611,7 +632,6 @@ async def save_status_to_file(force=False):
                 'ts_start': BOT_SETTINGS.get('TRAILING_START_RATE'),
                 'ts_stop': BOT_SETTINGS.get('TRAILING_STOP_RATE')
             }
-            # 참고용으로 원본 데이터도 유지
             if 'custom_sl_rate' in info:
                 info_copy['applied_strategy']['custom_sl'] = info['custom_sl_rate']
             
@@ -650,10 +670,12 @@ async def save_status_to_file(force=False):
             "trading_state": enriched_state,
             "account_summary": account_summary,
             "re_entry_cooldown": cooldown_data,
-            # 🌟 [신규] 대시보드로 현재 중요 설정 상태 전달 (AI 손절가 설정 포함)
+            # 🌟 [신규] 대시보드로 현재 중요 설정 상태 전달 (AI 손절가, 타임컷, RSI 설정 포함)
             "current_settings": { 
                  "use_ai_sl": BOT_SETTINGS.get("USE_AI_STOP_LOSS", True),
-                 "ai_safety_limit": BOT_SETTINGS.get("AI_STOP_LOSS_SAFETY_LIMIT", -5.0), # 🌟 추가됨
+                 "ai_safety_limit": BOT_SETTINGS.get("AI_STOP_LOSS_SAFETY_LIMIT", -5.0),
+                 "time_cut": BOT_SETTINGS.get("TIME_CUT_MINUTES", 20), # 🌟 추가
+                 "rsi_limit": BOT_SETTINGS.get("RSI_LIMIT", 75.0),     # 🌟 추가
                  "global_sl": BOT_SETTINGS.get("STOP_LOSS_RATE", -1.5)
             },
             "is_offline": False
@@ -938,7 +960,6 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                 calc_rate = (net_profit / pure_buy_amt) * 100
                 
                 # 5. 🌟 [수정] 설정된 안전장치 값 사용
-                # 사용자가 5를 입력했든 -5를 입력했든, 음수로 변환하여 비교 (-5.0)
                 ai_safety_limit = float(BOT_SETTINGS.get('AI_STOP_LOSS_SAFETY_LIMIT') or -5.0)
                 if ai_safety_limit > 0: ai_safety_limit = -ai_safety_limit
 
@@ -1243,6 +1264,23 @@ async def manage_open_positions():
                 # 로그에 AI 지정인지 표시
                 msg_type = "AI지정" if (use_ai_sl and 'custom_sl_rate' in state) else "설정"
                 sell_reason = f"손절({msg_type}) ({profit_rate:.2f}%)"
+
+            # 🌟 [신규] 타임컷 (Time-Cut) - 매수 후 20분 경과 & 수익률 0.5% 미만 시 매도
+            if not sell_reason:
+                order_time = state.get('order_time')
+                if isinstance(order_time, str):
+                    try: order_time = datetime.strptime(order_time, '%Y-%m-%d %H:%M:%S')
+                    except: order_time = now
+                
+                elapsed_min = (now - order_time).total_seconds() / 60
+                
+                # 🌟 [수정] 설정된 타임컷 시간 사용
+                time_cut_min = int(BOT_SETTINGS.get('TIME_CUT_MINUTES') or 20)
+                
+                # 타임컷 조건: 설정 시간 경과 AND 수익률 < 0.5% (지루함/탄력둔화)
+                # 0.5%는 수수료/세금을 제하고 거의 본전 수준이거나 약손실일 가능성이 큼
+                if elapsed_min > time_cut_min and profit_rate < 0.5:
+                    sell_reason = f"타임컷(탄력둔화) ({profit_rate:.2f}%)"
 
             if not sell_reason:
                 if not state.get('trailing_active', False):
