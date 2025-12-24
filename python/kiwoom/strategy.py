@@ -651,6 +651,7 @@ async def _load_initial_balance():
 
     old_condition_map = {}
     old_overnight_map = {}
+    old_sl_map = {}  # 🌟 [수정] 기존 AI 손절가 복구용 맵 추가
     RE_ENTRY_COOLDOWN = {}
 
     try:
@@ -661,6 +662,10 @@ async def _load_initial_balance():
                     old_condition_map[code] = info['condition_from']
                 if info.get('overnight_approved', False):
                     old_overnight_map[code] = True
+                
+                # 🌟 [수정] AI가 지정한 손절가가 있으면 복구
+                if info.get('custom_sl_rate'):
+                    old_sl_map[code] = info['custom_sl_rate']
 
             saved_cooldowns = old_data.get('re_entry_cooldown', {})
             now = datetime.now()
@@ -694,7 +699,8 @@ async def _load_initial_balance():
                 if restored_condition == "기존보유":
                     restored_condition = PENDING_ORDER_CONDITIONS.get(stock_code, "기존보유")
 
-                TRADING_STATE[stock_code] = {
+                # 기본 데이터 구성
+                stock_data = {
                     "stk_nm": stk_nm, "buy_price": buy_price, "buy_qty": buy_qty,
                     "trailing_active": False, "peak_profit_rate": max(profit_rate, 0),
                     "status": "보유 (잔고)", "current_profit_rate": profit_rate,
@@ -702,6 +708,13 @@ async def _load_initial_balance():
                     "condition_from": restored_condition,
                     "overnight_approved": old_overnight_map.get(stock_code, False)
                 }
+
+                # 🌟 [수정] 복구된 AI 손절가가 있으면 적용
+                if stock_code in old_sl_map:
+                    stock_data['custom_sl_rate'] = old_sl_map[stock_code]
+                    strategy_logger.info(f"💾 [복구] {stk_nm}: AI 지정 손절가 {old_sl_map[stock_code]}% 복원됨")
+
+                TRADING_STATE[stock_code] = stock_data
                 initial_stocks.append((stock_code, "0B"))
             except: pass
 
@@ -819,6 +832,18 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                         if current_price > 0: break
                     await asyncio.sleep(0.2)
                 stk_nm = stock_info.get('종목명', stock_code) if stock_info else stock_code
+
+            # 🌟 [수정] 가격 정보가 0일 경우 차트 데이터에서 강제 추출 시도 (Fallback)
+            if current_price <= 0:
+                try:
+                    await GLOBAL_API_LIMITER.wait()
+                    fallback_chart = await run_blocking(fn_ka10080_get_minute_chart, stock_code, tick="3")
+                    if fallback_chart and len(fallback_chart) > 0:
+                        # API 응답의 0번 인덱스가 최신 데이터임 (api_v1.py 참조)
+                        current_price = abs(int(fallback_chart[0]['cur_prc']))
+                        strategy_logger.info(f"⚠️ [가격복구] {stock_code}: 기본정보 실패 -> 차트데이터로 가격({current_price}) 확보")
+                except Exception as e:
+                    strategy_logger.error(f"가격 복구 시도 실패: {e}")
 
             if current_price <= 0:
                 strategy_logger.warning(f"❌ {stk_nm}({stock_code}) 가격 정보 없음. 스킵.")
