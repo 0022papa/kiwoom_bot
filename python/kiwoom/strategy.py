@@ -909,7 +909,7 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                     final_sl_rate = round(calc_rate, 2)
                     strategy_logger.info(f"🤖 [AI전략] {stk_nm}: AI 지정 손절가 {ai_sl_price}원 반영 -> 손절선 {final_sl_rate}% 설정")
 
-            BUY_ATTEMPT_HISTORY[stock_code] = datetime.now()d
+            BUY_ATTEMPT_HISTORY[stock_code] = datetime.now()
 
             strategy_logger.info(f"🚀 [주문전송] {stk_nm} / {buy_qty}주 / 시장가 / 예상손절 {final_sl_rate}%")
             cond_info_str = f"{condition_id}:{current_cond_name}"
