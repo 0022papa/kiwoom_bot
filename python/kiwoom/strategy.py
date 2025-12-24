@@ -117,7 +117,7 @@ DEFAULT_SETTINGS = {
     "MIN_BUY_SELL_RATIO": 0.5,
     "OVERNIGHT_COND_IDS": "2",
     "USE_AI_STOP_LOSS": True,       # AI 손절가 사용 여부 토글 (기본값: True)
-    "AI_STOP_LOSS_SAFETY_LIMIT": -5.0 # 🌟 [신규] AI 손절가 안전장치 한계값 (기본값: -5%)
+    "AI_STOP_LOSS_SAFETY_LIMIT": -5.0 # AI 손절가 안전장치 한계값 (기본값: -5%)
 }
 BOT_SETTINGS = DEFAULT_SETTINGS.copy()
 
@@ -947,7 +947,12 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                     final_sl_rate = round(calc_rate, 2)
                     strategy_logger.info(f"🤖 [AI전략] {stk_nm}: AI가격 {ai_sl_price}원 -> 정밀계산 손절률 {final_sl_rate}% (예상비용 {total_cost}원 포함)")
                 else:
-                    strategy_logger.info(f"🛡️ [안전장치] {stk_nm}: AI 손절률({calc_rate:.2f}%)이 안전한계({ai_safety_limit}%)를 초과하여 기본값({default_sl_rate}%) 사용")
+                    # 🌟 [안전장치 발동] AI 손절가가 안전장치보다 낮으면(위험하면) 진입 포기
+                    strategy_logger.info(f"🚫 [진입불가] {stk_nm}: AI 손절률({calc_rate:.2f}%)이 안전한계({ai_safety_limit}%)보다 낮아 위험합니다. 진입을 포기합니다.")
+                    if image_path:
+                        try: os.remove(image_path)
+                        except: pass
+                    return
             # ----------------------------------------------------------------------
 
             BUY_ATTEMPT_HISTORY[stock_code] = datetime.now()
