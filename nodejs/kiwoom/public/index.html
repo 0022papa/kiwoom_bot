@@ -107,6 +107,18 @@
                                 <label for="USE_AUTO_SELL" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
                             </div>
                         </div>
+
+                        <div class="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-700 rounded-lg border border-slate-200 dark:border-slate-600">
+                            <div>
+                                <label for="USE_AI_STOP_LOSS" class="text-sm font-bold text-slate-700 dark:text-slate-200 cursor-pointer select-none">AI 손절가 적용</label>
+                                <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">OFF 시 설정값 사용</p>
+                            </div>
+                            <div class="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
+                                <input type="checkbox" name="USE_AI_STOP_LOSS" id="USE_AI_STOP_LOSS" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                <label for="USE_AI_STOP_LOSS" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                            </div>
+                        </div>
+
                         <div class="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-700 rounded-lg border border-slate-200 dark:border-slate-600">
                             <div><label for="USE_TELEGRAM" class="text-sm font-bold text-slate-700 dark:text-slate-200 cursor-pointer select-none">텔레그램 알림</label></div>
                             <div class="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
@@ -194,6 +206,9 @@
                         <div class="flex justify-between items-center p-2 rounded bg-slate-50 dark:bg-slate-700/50 border-l-4 border-slate-300 dark:border-slate-500">
                             <span class="text-slate-600 dark:text-slate-300">시간준수 / 매도감시</span>
                             <div class="flex items-center gap-2"><span id="display_USE_MARKET_TIME" class="font-bold">...</span><span class="text-slate-300">|</span><span id="display_USE_AUTO_SELL" class="font-bold">...</span></div>
+                        </div>
+                        <div class="flex justify-between items-center p-2 rounded bg-slate-50 dark:bg-slate-700/50">
+                            <span class="text-slate-600 dark:text-slate-300">AI 손절가 사용</span><span id="display_USE_AI_STOP_LOSS" class="font-bold">...</span>
                         </div>
                         <div class="flex justify-between items-center p-2 rounded bg-slate-50 dark:bg-slate-700/50">
                             <span class="text-slate-600 dark:text-slate-300">알림 / 디버그</span>
@@ -612,6 +627,8 @@
                     USE_TELEGRAM: val => val ? '<span class="font-bold text-blue-500">🔔 ON</span>' : '<span class="font-bold text-slate-400">🔕 OFF</span>',
                     DEBUG_MODE: val => val ? '<span class="font-bold text-orange-500">🕵️ ON</span>' : '<span class="font-bold text-slate-400">🔒 OFF</span>',
                     USE_SCHEDULER: val => val ? '<span class="font-bold text-blue-500">⏰ ON</span>' : '<span class="font-bold text-slate-400">OFF</span>',
+                    // 🌟 [신규] AI 손절가 표시 맵핑
+                    USE_AI_STOP_LOSS: val => val ? '<span class="font-bold text-indigo-500">🤖 AI 적용</span>' : '<span class="font-bold text-slate-400">⚙️ 설정값</span>',
                     ORDER_AMOUNT: val => val.toLocaleString() + ' 원',
                     STOP_LOSS_RATE: val => val + ' %',
                     TRAILING_START_RATE: val => val + ' %',
@@ -726,21 +743,19 @@
             }
         }
 
-        // 🌟 [신규] 시스템 로그 로드 함수
         async function loadSystemLogs() {
             try {
                 const res = await fetchAPI('/api/logs');
                 const data = res; 
                 const container = document.getElementById('system-log-container');
-                const scrollParent = container.parentElement; // 스크롤이 생기는 부모 요소
+                const scrollParent = container.parentElement;
 
-                // 1. 현재 스크롤이 맨 아래 근처인지 확인 (오차범위 50px)
                 const isAtBottom = scrollParent.scrollHeight - scrollParent.scrollTop - scrollParent.clientHeight < 50;
                 
                 if (data && data.logs && data.logs.length > 0) {
-                    const sortedLogs = [...data.logs].reverse(); // 최신이 아래로 오게 정렬
+                    const sortedLogs = [...data.logs].reverse(); 
                     const html = sortedLogs.map(log => {
-                        const timeStr = log.timestamp.substring(5); // MM-DD HH:MM:SS
+                        const timeStr = log.timestamp.substring(5);
                         const levelClass = `log-${log.level}`;
                         return `
                             <div class="log-entry ${levelClass}">
@@ -753,8 +768,6 @@
                     
                     container.innerHTML = html;
                     
-                    // 2. 이전에 맨 아래를 보고 있었을 때만 스크롤 내리기 (자동 스크롤)
-                    // 사용자가 위를 보고 있었다면 스크롤을 건드리지 않음
                     if (isAtBottom) {
                         scrollParent.scrollTop = scrollParent.scrollHeight;
                     }
@@ -794,6 +807,9 @@
             settings.DEBUG_MODE = document.getElementById('DEBUG_MODE').checked;
             settings.MOCK_TRADE = document.getElementById('MOCK_TRADE').checked;
             settings.USE_SCHEDULER = document.getElementById('USE_SCHEDULER').checked;
+            
+            // 🌟 [신규] AI 손절가 토글 값 전송
+            settings.USE_AI_STOP_LOSS = document.getElementById('USE_AI_STOP_LOSS').checked;
 
             if (!isMockCheck) {
                 if (!confirm("⚠️ [경고] '실전 투자' 모드입니다!\n정말로 저장하시겠습니까?")) {
@@ -813,7 +829,6 @@
             const btn = document.getElementById('refresh-trades-btn'); const icon = document.getElementById('refresh-icon');
             btn.disabled = true; icon.classList.add('animate-spin', 'text-blue-600', 'dark:text-blue-400');
             
-            // 현재 활성 탭에 따라 갱신 동작 분기
             if (currentTab === 'trades') {
                 try { await Promise.all([ loadTradesLog(true), new Promise(resolve => setTimeout(resolve, 600)) ]); showMessage('매매 기록 갱신 완료', 'success'); } 
                 catch (error) { showMessage('갱신 실패', 'error'); } finally { icon.classList.remove('animate-spin', 'text-blue-600', 'dark:text-blue-400'); btn.disabled = false; }

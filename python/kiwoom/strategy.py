@@ -115,7 +115,8 @@ DEFAULT_SETTINGS = {
     "AFTERNOON_START": "15:10", "AFTERNOON_COND": "2",
     "USE_HOGA_FILTER": True,
     "MIN_BUY_SELL_RATIO": 0.5,
-    "OVERNIGHT_COND_IDS": "2"
+    "OVERNIGHT_COND_IDS": "2",
+    "USE_AI_STOP_LOSS": True # 🌟 [신규 추가] AI 손절가 사용 여부 토글 (기본값: True)
 }
 BOT_SETTINGS = DEFAULT_SETTINGS.copy()
 
@@ -545,6 +546,9 @@ async def load_settings_from_file():
             val = saved_settings.get(key)
             if key == "CONDITION_ID": val = str(val) if (val is not None and val != "") else "0"
             elif key == "USE_MARKET_TIME": val = bool(val) if val is not None else True
+            # 🌟 [추가] AI 손절가 토글 설정 파싱
+            elif key == "USE_AI_STOP_LOSS": val = bool(val) if val is not None else True
+
             if key in ["MORNING_START", "MORNING_COND", "LUNCH_START", "LUNCH_COND", "AFTERNOON_START", "AFTERNOON_COND", "OVERNIGHT_COND_IDS"]:
                  if val is not None: BOT_SETTINGS[key] = str(val)
             else:
@@ -644,6 +648,11 @@ async def save_status_to_file(force=False):
             "trading_state": enriched_state,
             "account_summary": account_summary,
             "re_entry_cooldown": cooldown_data,
+            # 🌟 [신규] 대시보드로 현재 중요 설정 상태 전달
+            "current_settings": { 
+                 "use_ai_sl": BOT_SETTINGS.get("USE_AI_STOP_LOSS", True),
+                 "global_sl": BOT_SETTINGS.get("STOP_LOSS_RATE", -1.5)
+            },
             "is_offline": False
         }
 
@@ -1160,6 +1169,9 @@ async def manage_open_positions():
     apply_ts_stop = float(BOT_SETTINGS.get('TRAILING_STOP_RATE') or -1.0)
     cooldown_min = BOT_SETTINGS.get('RE_ENTRY_COOLDOWN_MIN') or 30
     is_auto_sell_on = BOT_SETTINGS.get("USE_AUTO_SELL", False)
+    
+    # 🌟 [신규] 토글 상태 가져오기 (기본값 True: AI 손절가 사용)
+    use_ai_sl = BOT_SETTINGS.get('USE_AI_STOP_LOSS', True)
 
     R_BUY_FEE_RATE = 0.0035 if MOCK_TRADE else 0.00015
     R_SELL_FEE_RATE = 0.0035 if MOCK_TRADE else 0.00015
@@ -1204,13 +1216,17 @@ async def manage_open_positions():
 
             if not is_auto_sell_on: continue
 
-            # 🌟 [수정] 종목별 개별 AI 손절가 적용 (없으면 전역 설정 사용)
-            apply_sl = state.get('custom_sl_rate', global_sl)
+            # 🌟 [수정] 토글 설정에 따라 AI 손절가(custom_sl_rate) 사용 여부 결정
+            # use_ai_sl이 True이고, 종목에 custom_sl_rate가 있다면 그것을 사용
+            # 그렇지 않다면 전역 설정(global_sl) 사용
+            apply_sl = global_sl
+            if use_ai_sl and 'custom_sl_rate' in state:
+                apply_sl = state['custom_sl_rate']
 
             sell_reason = None
             if profit_rate <= apply_sl: 
                 # 로그에 AI 지정인지 표시
-                msg_type = "AI지정" if 'custom_sl_rate' in state else "설정"
+                msg_type = "AI지정" if (use_ai_sl and 'custom_sl_rate' in state) else "설정"
                 sell_reason = f"손절({msg_type}) ({profit_rate:.2f}%)"
 
             if not sell_reason:
