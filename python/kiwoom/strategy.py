@@ -281,7 +281,7 @@ async def send_daily_report():
         strategy_logger.error(f"리포트 생성 실패: {e}")
         strategy_logger.error(traceback.format_exc())
 
-# 🌟 [수정] custom_sl_rate 인자 추가
+# 🌟 [수정] custom_sl_rate 인자 추가 및 텔레그램 메시지 수정
 async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=0, profit_amt=0, peak_rate=0, image_path=None, ai_reason=None, custom_sl_rate=None):
     try:
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -892,7 +892,9 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                 return
 
             buy_qty = int((order_amount * 0.95) // current_price)
+            # 🌟 [추가] 매수 수량 0주 (예산 부족 등) 로그 출력
             if buy_qty == 0:
+                strategy_logger.warning(f"🚫 [진입불가] {stk_nm} ({stock_code}): 주문 가능 수량 0주 (예산 부족 또는 고가 종목)")
                 if image_path:
                     try: os.remove(image_path)
                     except: pass
@@ -962,16 +964,30 @@ async def check_for_new_stocks():
         stock_code = event.get('stock_code', '').strip('AJ')
         if event.get('type') != 'I': continue
         initial_price = event.get('price')
+        
+        # 🌟 [추가] 로그용 종목명 확보
+        stk_name = ws_manager.master_stock_names.get(stock_code, stock_code)
 
-        if stock_code in TRADING_STATE: continue
-        if stock_code in PROCESSING_STOCKS: continue
+        # 🌟 [수정] 각 조건별 진입 거절 로그 추가
+        if stock_code in TRADING_STATE:
+            strategy_logger.info(f"🚫 [진입거절] {stk_name} ({stock_code}): 이미 보유 중")
+            continue
+        if stock_code in PROCESSING_STOCKS:
+            strategy_logger.info(f"🚫 [진입거절] {stk_name} ({stock_code}): 현재 분석/주문 처리 중")
+            continue
         if stock_code in RE_ENTRY_COOLDOWN:
-            if datetime.now() < RE_ENTRY_COOLDOWN[stock_code]: continue
+            if datetime.now() < RE_ENTRY_COOLDOWN[stock_code]:
+                remain = RE_ENTRY_COOLDOWN[stock_code] - datetime.now()
+                remain_sec = int(remain.total_seconds())
+                strategy_logger.info(f"🚫 [진입거절] {stk_name} ({stock_code}): 재진입 쿨타임 중 ({remain_sec}초 남음)")
+                continue
             else: del RE_ENTRY_COOLDOWN[stock_code]
 
         if stock_code in BUY_ATTEMPT_HISTORY:
             elapsed = (datetime.now() - BUY_ATTEMPT_HISTORY[stock_code]).total_seconds()
-            if elapsed < 60: continue
+            if elapsed < 60:
+                strategy_logger.info(f"🚫 [진입거절] {stk_name} ({stock_code}): 최근 매수 시도 이력 있음")
+                continue
             else: del BUY_ATTEMPT_HISTORY[stock_code]
 
         PROCESSING_STOCKS.add(stock_code)
