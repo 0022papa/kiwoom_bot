@@ -197,8 +197,9 @@ app.post('/api/settings', checkAuth, async (req, res) => {
         
         if(settings.OVERNIGHT_COND_IDS === undefined) settings.OVERNIGHT_COND_IDS = "2";
         
-        // 🌟 [신규] AI 손절가 토글 처리 (값이 없으면 기본값 true)
+        // 🌟 [수정] AI 손절가 토글 및 안전장치 값 저장 로직 추가
         if(settings.USE_AI_STOP_LOSS === undefined) settings.USE_AI_STOP_LOSS = true;
+        settings.AI_STOP_LOSS_SAFETY_LIMIT = parseNum(settings.AI_STOP_LOSS_SAFETY_LIMIT, -5.0);
 
         await setKV("settings", settings);
         res.json({ success: true, message: 'Settings saved' });

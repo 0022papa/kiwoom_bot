@@ -116,7 +116,8 @@ DEFAULT_SETTINGS = {
     "USE_HOGA_FILTER": True,
     "MIN_BUY_SELL_RATIO": 0.5,
     "OVERNIGHT_COND_IDS": "2",
-    "USE_AI_STOP_LOSS": True # 🌟 [신규 추가] AI 손절가 사용 여부 토글 (기본값: True)
+    "USE_AI_STOP_LOSS": True,       # AI 손절가 사용 여부 토글 (기본값: True)
+    "AI_STOP_LOSS_SAFETY_LIMIT": -5.0 # 🌟 [신규] AI 손절가 안전장치 한계값 (기본값: -5%)
 }
 BOT_SETTINGS = DEFAULT_SETTINGS.copy()
 
@@ -546,8 +547,9 @@ async def load_settings_from_file():
             val = saved_settings.get(key)
             if key == "CONDITION_ID": val = str(val) if (val is not None and val != "") else "0"
             elif key == "USE_MARKET_TIME": val = bool(val) if val is not None else True
-            # 🌟 [추가] AI 손절가 토글 설정 파싱
+            # 🌟 [추가] AI 손절가 토글 및 안전장치 값 파싱
             elif key == "USE_AI_STOP_LOSS": val = bool(val) if val is not None else True
+            elif key == "AI_STOP_LOSS_SAFETY_LIMIT": val = float(val) if val is not None else -5.0
 
             if key in ["MORNING_START", "MORNING_COND", "LUNCH_START", "LUNCH_COND", "AFTERNOON_START", "AFTERNOON_COND", "OVERNIGHT_COND_IDS"]:
                  if val is not None: BOT_SETTINGS[key] = str(val)
@@ -648,9 +650,10 @@ async def save_status_to_file(force=False):
             "trading_state": enriched_state,
             "account_summary": account_summary,
             "re_entry_cooldown": cooldown_data,
-            # 🌟 [신규] 대시보드로 현재 중요 설정 상태 전달
+            # 🌟 [신규] 대시보드로 현재 중요 설정 상태 전달 (AI 손절가 설정 포함)
             "current_settings": { 
                  "use_ai_sl": BOT_SETTINGS.get("USE_AI_STOP_LOSS", True),
+                 "ai_safety_limit": BOT_SETTINGS.get("AI_STOP_LOSS_SAFETY_LIMIT", -5.0), # 🌟 추가됨
                  "global_sl": BOT_SETTINGS.get("STOP_LOSS_RATE", -1.5)
             },
             "is_offline": False
@@ -934,10 +937,17 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                 net_profit = expected_sell_amt - pure_buy_amt - total_cost
                 calc_rate = (net_profit / pure_buy_amt) * 100
                 
-                # 5. 안전장치 적용
-                if -5.0 <= calc_rate < 0:
+                # 5. 🌟 [수정] 설정된 안전장치 값 사용
+                # 사용자가 5를 입력했든 -5를 입력했든, 음수로 변환하여 비교 (-5.0)
+                ai_safety_limit = float(BOT_SETTINGS.get('AI_STOP_LOSS_SAFETY_LIMIT') or -5.0)
+                if ai_safety_limit > 0: ai_safety_limit = -ai_safety_limit
+
+                # 계산된 손실률이 안전장치보다 크고(덜 위험하고), 0보다 작을 때(손실)만 AI 값 채택
+                if ai_safety_limit <= calc_rate < 0:
                     final_sl_rate = round(calc_rate, 2)
                     strategy_logger.info(f"🤖 [AI전략] {stk_nm}: AI가격 {ai_sl_price}원 -> 정밀계산 손절률 {final_sl_rate}% (예상비용 {total_cost}원 포함)")
+                else:
+                    strategy_logger.info(f"🛡️ [안전장치] {stk_nm}: AI 손절률({calc_rate:.2f}%)이 안전한계({ai_safety_limit}%)를 초과하여 기본값({default_sl_rate}%) 사용")
             # ----------------------------------------------------------------------
 
             BUY_ATTEMPT_HISTORY[stock_code] = datetime.now()

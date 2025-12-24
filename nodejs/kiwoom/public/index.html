@@ -108,14 +108,27 @@
                             </div>
                         </div>
 
-                        <div class="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-700 rounded-lg border border-slate-200 dark:border-slate-600">
-                            <div>
-                                <label for="USE_AI_STOP_LOSS" class="text-sm font-bold text-slate-700 dark:text-slate-200 cursor-pointer select-none">AI 손절가 적용</label>
-                                <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">OFF 시 설정값 사용</p>
+                        <div class="border border-indigo-200 dark:border-indigo-800 rounded-lg p-3 bg-indigo-50 dark:bg-indigo-900/20 transition-all">
+                            <div class="flex items-center justify-between mb-2">
+                                <div>
+                                    <label for="USE_AI_STOP_LOSS" class="text-sm font-bold text-indigo-800 dark:text-indigo-200 cursor-pointer select-none">🤖 AI 손절가 적용</label>
+                                </div>
+                                <div class="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
+                                    <input type="checkbox" name="USE_AI_STOP_LOSS" id="USE_AI_STOP_LOSS" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                    <label for="USE_AI_STOP_LOSS" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                                </div>
                             </div>
-                            <div class="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
-                                <input type="checkbox" name="USE_AI_STOP_LOSS" id="USE_AI_STOP_LOSS" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
-                                <label for="USE_AI_STOP_LOSS" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                            
+                            <div id="ai-safety-box" class="hidden mt-2 border-t border-indigo-200 dark:border-indigo-700 pt-2">
+                                <div class="flex justify-between items-center">
+                                    <label for="AI_STOP_LOSS_SAFETY_LIMIT" class="text-xs font-bold text-indigo-700 dark:text-indigo-300">📉 안전장치 한계 (%)</label>
+                                    <div class="flex items-center w-1/2">
+                                        <input type="number" step="0.1" id="AI_STOP_LOSS_SAFETY_LIMIT" name="AI_STOP_LOSS_SAFETY_LIMIT" class="w-full p-1.5 border border-indigo-300 dark:border-indigo-600 rounded text-xs text-right focus:ring-2 focus:ring-indigo-500 outline-none dark:bg-slate-800 dark:text-white" placeholder="-5.0">
+                                    </div>
+                                </div>
+                                <p class="text-[10px] text-indigo-500 dark:text-indigo-400 mt-1 leading-tight">
+                                    * AI 손절가가 이 값보다 더 낮으면(위험하면) 무시하고 기본 손절가를 사용합니다.
+                                </p>
                             </div>
                         </div>
 
@@ -466,6 +479,18 @@
         }
         schedulerCheck.addEventListener('change', toggleSchedulerUI);
 
+        // 🌟 [신규] AI 손절가 토글 처리
+        const aiSlCheck = document.getElementById('USE_AI_STOP_LOSS');
+        const aiSafetyBox = document.getElementById('ai-safety-box');
+        function toggleAiSlUI() {
+            if (aiSlCheck.checked) {
+                aiSafetyBox.classList.remove('hidden');
+            } else {
+                aiSafetyBox.classList.add('hidden');
+            }
+        }
+        aiSlCheck.addEventListener('change', toggleAiSlUI);
+
         async function updateBotStatus() {
             const data = await fetchAPI('/api/status'); 
             if (data) {
@@ -614,6 +639,7 @@
                             if (el.type === 'checkbox') {
                                 el.checked = data[key] !== false;
                                 if(key === 'USE_SCHEDULER') toggleSchedulerUI();
+                                if(key === 'USE_AI_STOP_LOSS') toggleAiSlUI(); // 🌟 추가
                             }
                             else el.value = data[key];
                         }
@@ -627,8 +653,12 @@
                     USE_TELEGRAM: val => val ? '<span class="font-bold text-blue-500">🔔 ON</span>' : '<span class="font-bold text-slate-400">🔕 OFF</span>',
                     DEBUG_MODE: val => val ? '<span class="font-bold text-orange-500">🕵️ ON</span>' : '<span class="font-bold text-slate-400">🔒 OFF</span>',
                     USE_SCHEDULER: val => val ? '<span class="font-bold text-blue-500">⏰ ON</span>' : '<span class="font-bold text-slate-400">OFF</span>',
-                    // 🌟 [신규] AI 손절가 표시 맵핑
-                    USE_AI_STOP_LOSS: val => val ? '<span class="font-bold text-indigo-500">🤖 AI 적용</span>' : '<span class="font-bold text-slate-400">⚙️ 설정값</span>',
+                    // 🌟 [신규] AI 손절가 및 안전장치 요약 표시
+                    USE_AI_STOP_LOSS: val => {
+                        if (!val) return '<span class="font-bold text-slate-400">⚙️ 설정값</span>';
+                        const limit = data.AI_STOP_LOSS_SAFETY_LIMIT || -5.0;
+                        return `<span class="font-bold text-indigo-500">🤖 AI (Limit ${limit}%)</span>`;
+                    },
                     ORDER_AMOUNT: val => val.toLocaleString() + ' 원',
                     STOP_LOSS_RATE: val => val + ' %',
                     TRAILING_START_RATE: val => val + ' %',
@@ -808,8 +838,9 @@
             settings.MOCK_TRADE = document.getElementById('MOCK_TRADE').checked;
             settings.USE_SCHEDULER = document.getElementById('USE_SCHEDULER').checked;
             
-            // 🌟 [신규] AI 손절가 토글 값 전송
+            // 🌟 [신규] AI 손절가 토글 및 안전장치 값 전송
             settings.USE_AI_STOP_LOSS = document.getElementById('USE_AI_STOP_LOSS').checked;
+            settings.AI_STOP_LOSS_SAFETY_LIMIT = parseFloat(settings.AI_STOP_LOSS_SAFETY_LIMIT || -5.0);
 
             if (!isMockCheck) {
                 if (!confirm("⚠️ [경고] '실전 투자' 모드입니다!\n정말로 저장하시겠습니까?")) {
