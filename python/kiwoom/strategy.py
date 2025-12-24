@@ -900,16 +900,36 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                     except: pass
                 return
 
-            # 🌟 [신규] AI가 제시한 손절가를 퍼센트(%)로 변환
+            # 🌟 [완전 수정] AI 손절가 정밀 계산 로직 (수수료/세금 포함 실제 수익률 기준)
+            # ----------------------------------------------------------------------
             default_sl_rate = float(BOT_SETTINGS.get('STOP_LOSS_RATE') or -1.5)
             final_sl_rate = default_sl_rate
 
             if ai_sl_price > 0 and current_price > 0:
-                calc_rate = ((ai_sl_price - current_price) / current_price) * 100
-                # 안전장치: -10%보다 더 크거나(너무 깊음), 양수(익절가격)면 기본값 사용
+                # 1. 수수료율 상수 정의 (manage_open_positions와 동일하게)
+                R_BUY_FEE_RATE = 0.0035 if MOCK_TRADE else 0.00015
+                R_SELL_FEE_RATE = 0.0035 if MOCK_TRADE else 0.00015
+                R_TAX_RATE = 0.0015
+
+                # 2. 예상 매매 금액 계산
+                pure_buy_amt = current_price * buy_qty
+                expected_sell_amt = ai_sl_price * buy_qty
+                
+                # 3. 비용 정밀 계산 (절사 포함)
+                buy_fee = int(pure_buy_amt * R_BUY_FEE_RATE)
+                sell_fee = int(expected_sell_amt * R_SELL_FEE_RATE)
+                tax = int(expected_sell_amt * R_TAX_RATE)
+                total_cost = buy_fee + sell_fee + tax
+                
+                # 4. 최종 순수익 및 수익률 계산
+                net_profit = expected_sell_amt - pure_buy_amt - total_cost
+                calc_rate = (net_profit / pure_buy_amt) * 100
+                
+                # 5. 안전장치 적용
                 if -5.0 <= calc_rate < 0:
                     final_sl_rate = round(calc_rate, 2)
-                    strategy_logger.info(f"🤖 [AI전략] {stk_nm}: AI 지정 손절가 {ai_sl_price}원 반영 -> 손절선 {final_sl_rate}% 설정")
+                    strategy_logger.info(f"🤖 [AI전략] {stk_nm}: AI가격 {ai_sl_price}원 -> 정밀계산 손절률 {final_sl_rate}% (예상비용 {total_cost}원 포함)")
+            # ----------------------------------------------------------------------
 
             BUY_ATTEMPT_HISTORY[stock_code] = datetime.now()
 
