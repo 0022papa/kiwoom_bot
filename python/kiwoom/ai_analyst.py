@@ -100,8 +100,9 @@ def create_chart_image(stock_code, stock_name, candle_data):
             
         file_path = f"{save_dir}/{stock_code}_chart.png"
         
+        # 🌟 [수정 완료] title에서 한글 stock_name을 제거하고 stock_code만 표시하여 폰트 깨짐 방지
         mpf.plot(df, type='candle', mav=(5, 20), volume=True, style=s, 
-                 title=f"{stock_name} ({stock_code})", 
+                 title=f"CODE: {stock_code}", 
                  savefig=dict(fname=file_path, dpi=100, bbox_inches='tight'))
         
         return file_path

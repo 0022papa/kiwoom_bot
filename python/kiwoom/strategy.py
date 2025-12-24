@@ -281,7 +281,8 @@ async def send_daily_report():
         strategy_logger.error(f"리포트 생성 실패: {e}")
         strategy_logger.error(traceback.format_exc())
 
-async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=0, profit_amt=0, peak_rate=0, image_path=None, ai_reason=None):
+# 🌟 [수정] custom_sl_rate 인자 추가
+async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=0, profit_amt=0, peak_rate=0, image_path=None, ai_reason=None, custom_sl_rate=None):
     try:
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         price_str = f"{price:,}"
@@ -307,6 +308,11 @@ async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=
         emoji = "🔴 매수" if action == "BUY" else "🔵 매도"
         tg_msg = f"{emoji} <b>체결 알림</b>"
         if action == "BUY" and ai_reason: tg_msg += f"\n🤖 <b>AI분석:</b> {ai_reason}"
+        
+        # 🌟 [추가] 텔레그램 메세지에 AI 손절가 표시
+        if action == "BUY" and custom_sl_rate is not None:
+             tg_msg += f"\n📉 <b>설정손절:</b> {custom_sl_rate}%"
+
         tg_msg += f"\n사유: {reason}\n종목: {stk_nm} ({stock_code})\n가격: {price_str}원\n수량: {qty}주"
 
         if action == "SELL":
@@ -587,12 +593,19 @@ async def save_status_to_file(force=False):
                 info_copy['order_time'] = info_copy['order_time'].strftime('%Y-%m-%d %H:%M:%S')
             if 'last_cancel_try' in info_copy and isinstance(info_copy['last_cancel_try'], datetime):
                 info_copy['last_cancel_try'] = info_copy['last_cancel_try'].strftime('%Y-%m-%d %H:%M:%S')
+            
+            # 🌟 [수정] 대시보드 표시용 데이터 구성
+            # AI 손절가(custom_sl_rate)가 있으면 그것을 'sl' 값으로 사용하여 대시보드에 우선 표시
+            effective_sl = info.get('custom_sl_rate')
+            if effective_sl is None:
+                effective_sl = BOT_SETTINGS.get('STOP_LOSS_RATE')
+
             info_copy['applied_strategy'] = {
-                'sl': BOT_SETTINGS.get('STOP_LOSS_RATE'),
+                'sl': effective_sl,
                 'ts_start': BOT_SETTINGS.get('TRAILING_START_RATE'),
                 'ts_stop': BOT_SETTINGS.get('TRAILING_STOP_RATE')
             }
-            # 🌟 AI가 정한 손절률이 있으면 정보에 추가
+            # 참고용으로 원본 데이터도 유지
             if 'custom_sl_rate' in info:
                 info_copy['applied_strategy']['custom_sl'] = info['custom_sl_rate']
             
@@ -892,11 +905,11 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
             if ai_sl_price > 0 and current_price > 0:
                 calc_rate = ((ai_sl_price - current_price) / current_price) * 100
                 # 안전장치: -10%보다 더 크거나(너무 깊음), 양수(익절가격)면 기본값 사용
-                if -10.0 <= calc_rate < 0:
+                if -5.0 <= calc_rate < 0:
                     final_sl_rate = round(calc_rate, 2)
                     strategy_logger.info(f"🤖 [AI전략] {stk_nm}: AI 지정 손절가 {ai_sl_price}원 반영 -> 손절선 {final_sl_rate}% 설정")
 
-            BUY_ATTEMPT_HISTORY[stock_code] = datetime.now()
+            BUY_ATTEMPT_HISTORY[stock_code] = datetime.now()d
 
             strategy_logger.info(f"🚀 [주문전송] {stk_nm} / {buy_qty}주 / 시장가 / 예상손절 {final_sl_rate}%")
             cond_info_str = f"{condition_id}:{current_cond_name}"
@@ -905,7 +918,8 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
             ord_no = await run_blocking(fn_kt10000_buy_order, stock_code, buy_qty, price=0)
 
             if ord_no:
-                await log_trade(stock_code, stk_nm, "BUY", buy_qty, current_price, f"조건검색({condition_id})", image_path=image_path, ai_reason=ai_reason)
+                # 🌟 [수정] log_trade 호출 시 custom_sl_rate 전달
+                await log_trade(stock_code, stk_nm, "BUY", buy_qty, current_price, f"조건검색({condition_id})", image_path=image_path, ai_reason=ai_reason, custom_sl_rate=final_sl_rate)
                 TRADING_STATE[stock_code] = {
                     "stk_nm": stk_nm, "buy_price": current_price, "buy_qty": buy_qty,
                     "trailing_active": False, "peak_profit_rate": 0.0,
