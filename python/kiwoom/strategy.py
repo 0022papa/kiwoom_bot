@@ -119,7 +119,7 @@ DEFAULT_SETTINGS = {
     "USE_AI_STOP_LOSS": True,
     "AI_STOP_LOSS_SAFETY_LIMIT": -5.0,
     "TIME_CUT_MINUTES": 20, # 🌟 [신규 설정] 타임컷 (기본 20분)
-    "RSI_LIMIT": 75.0       # 🌟 [신규 설정] RSI 과매수 제한 (기본 75.0)
+    "RSI_LIMIT": 70.0       # 🌟 [신규 설정] RSI 과매수 제한 (기본 70.0)
 }
 BOT_SETTINGS = DEFAULT_SETTINGS.copy()
 
@@ -362,7 +362,7 @@ async def analyze_chart_pattern(stock_code, stock_name, condition_id="0"):
         if not chart_data or len(chart_data) < 30: 
             return True, None, None, 0  # 데이터 부족 시
 
-        # 2. 데이터 프레임 변환
+        # 2. 데이터 프레임 변환 (API는 최신순 -> DataFrame 뒤집어서 과거->최신순 정렬)
         df = pd.DataFrame(chart_data)
         df['close'] = df['cur_prc'].apply(lambda x: abs(int(x)) if x else 0)
         df['open'] = df['open_pric'].apply(lambda x: abs(int(x)) if x else 0)
@@ -392,6 +392,9 @@ async def analyze_chart_pattern(stock_code, stock_name, condition_id="0"):
 
         # 🌟 [신규] RSI 필터: 과매수 구간 진입 금지 (설정값 사용)
         delta = df['close'].diff()
+        # NaN 값 처리 추가 (초기 데이터 안전장치)
+        delta = delta.fillna(0)
+        
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         
@@ -401,8 +404,11 @@ async def analyze_chart_pattern(stock_code, stock_name, condition_id="0"):
         
         current_rsi = df.loc[current_idx, 'RSI']
         
+        # RSI가 NaN인 경우 (데이터 부족) 50으로 처리하여 에러 방지
+        if pd.isna(current_rsi): current_rsi = 50.0
+
         # 설정된 RSI_LIMIT 값 가져오기
-        rsi_limit = float(BOT_SETTINGS.get('RSI_LIMIT') or 75.0)
+        rsi_limit = float(BOT_SETTINGS.get('RSI_LIMIT') or 70.0)
         
         if current_rsi > rsi_limit:
             strategy_logger.info(f"🛡️ [RSI필터] {stock_code}: 과매수 구간(RSI {current_rsi:.1f}) -> 진입 포기")
@@ -571,12 +577,15 @@ async def load_settings_from_file():
             elif key == "USE_AI_STOP_LOSS": val = bool(val) if val is not None else True
             elif key == "AI_STOP_LOSS_SAFETY_LIMIT": val = float(val) if val is not None else -5.0
             elif key == "TIME_CUT_MINUTES": val = int(val) if val is not None else 20
-            elif key == "RSI_LIMIT": val = float(val) if val is not None else 75.0
+            elif key == "RSI_LIMIT": val = float(val) if val is not None else 70.0
 
             if key in ["MORNING_START", "MORNING_COND", "LUNCH_START", "LUNCH_COND", "AFTERNOON_START", "AFTERNOON_COND", "OVERNIGHT_COND_IDS"]:
                  if val is not None: BOT_SETTINGS[key] = str(val)
             else:
                  BOT_SETTINGS[key] = val if val is not None else default_val
+
+        # 로그로 설정값 확인 (한 번만 출력하도록 로직 추가 가능하지만 여기선 확인용으로 둠)
+        # strategy_logger.debug(f"⚙️ 설정 로드: RSI제한({BOT_SETTINGS['RSI_LIMIT']}), 타임컷({BOT_SETTINGS['TIME_CUT_MINUTES']}분)")
 
         debug_val = BOT_SETTINGS.get("DEBUG_MODE", False)
         new_level = logging.DEBUG if debug_val else logging.INFO
@@ -674,8 +683,8 @@ async def save_status_to_file(force=False):
             "current_settings": { 
                  "use_ai_sl": BOT_SETTINGS.get("USE_AI_STOP_LOSS", True),
                  "ai_safety_limit": BOT_SETTINGS.get("AI_STOP_LOSS_SAFETY_LIMIT", -5.0),
-                 "time_cut": BOT_SETTINGS.get("TIME_CUT_MINUTES", 20), # 🌟 추가
-                 "rsi_limit": BOT_SETTINGS.get("RSI_LIMIT", 75.0),     # 🌟 추가
+                 "time_cut": BOT_SETTINGS.get("TIME_CUT_MINUTES", 20), # 🌟 추가됨
+                 "rsi_limit": BOT_SETTINGS.get("RSI_LIMIT", 70.0),     # 🌟 추가됨
                  "global_sl": BOT_SETTINGS.get("STOP_LOSS_RATE", -1.5)
             },
             "is_offline": False
@@ -1280,7 +1289,7 @@ async def manage_open_positions():
                 # 타임컷 조건: 설정 시간 경과 AND 수익률 < 0.5% (지루함/탄력둔화)
                 # 0.5%는 수수료/세금을 제하고 거의 본전 수준이거나 약손실일 가능성이 큼
                 if elapsed_min > time_cut_min and profit_rate < 0.5:
-                    sell_reason = f"타임컷(탄력둔화) ({profit_rate:.2f}%)"
+                    sell_reason = f"타임컷(탄력둔화) ({profit_rate:.2f}%) - {int(elapsed_min)}분 경과"
 
             if not sell_reason:
                 if not state.get('trailing_active', False):
