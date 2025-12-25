@@ -11,6 +11,7 @@ import queue
 import re
 import exchange_calendars as xcals
 import pandas as pd
+import FinanceDataReader as fdr
 from collections import deque
 from datetime import datetime, timedelta
 from logging.handlers import TimedRotatingFileHandler
@@ -29,7 +30,7 @@ from api_v1 import (
     fn_kt10003_cancel_order,
     fn_ka10004_get_hoga,
     fn_ka10080_get_minute_chart,
-    fn_ka10005_get_daily_chart,
+    # fn_ka10005_get_daily_chart,  <-- 삭제됨
     fn_ka10074_get_daily_profit,
     set_api_debug_mode
 )
@@ -85,9 +86,9 @@ TELEGRAM_QUEUE = asyncio.Queue()
 TODAY_REALIZED_PROFIT = 0
 LAST_PROFIT_CHECK_TIME = datetime.min
 CACHED_CONDITION_NAMES = {}
-STOCK_MARKET_MAP = {} # 🌟 [신규] 종목별 시장 구분 맵 (메모리 로드)
+STOCK_MARKET_MAP = {} 
 
-# 🌟 [수정] 시장 지수 상태 (코스피/코스닥 분리)
+# 시장 지수 상태 (코스피/코스닥 분리)
 MARKET_STATUS = {
     "001": { "name": "코스피", "is_bullish": True, "price": 0, "ma20": 0 },
     "101": { "name": "코스닥", "is_bullish": True, "price": 0, "ma20": 0 },
@@ -127,7 +128,7 @@ DEFAULT_SETTINGS = {
     "AI_STOP_LOSS_SAFETY_LIMIT": -5.0,
     "TIME_CUT_MINUTES": 20, 
     "RSI_LIMIT": 70.0,
-    "USE_MARKET_FILTER": False # 🌟 지수 필터 사용 여부 (종목별 자동 적용)
+    "USE_MARKET_FILTER": True 
 }
 BOT_SETTINGS = DEFAULT_SETTINGS.copy()
 
@@ -174,7 +175,6 @@ async def load_condition_names():
     except Exception as e:
         strategy_logger.error(f"조건식 이름 로드 실패: {e}")
 
-# 🌟 [신규] 종목별 시장 정보 로드
 async def load_stock_market_map():
     global STOCK_MARKET_MAP
     try:
@@ -188,7 +188,7 @@ async def load_stock_market_map():
         strategy_logger.error(f"시장 정보 로드 실패: {e}")
 
 # ---------------------------------------------------------
-# 5. 텔레그램 및 리포트 (생략 - 위와 동일)
+# 5. 텔레그램 및 리포트
 # ---------------------------------------------------------
 async def _telegram_worker():
     import requests
@@ -373,12 +373,11 @@ def is_market_open():
             return start <= current_time <= end
         return False
 
-# 🌟 [수정] 지수 필터 체크 (코스피/코스닥 별도 관리)
+# 지수 필터 체크 (FinanceDataReader 사용)
 async def check_market_index_status():
     global MARKET_STATUS
     
     use_filter = BOT_SETTINGS.get("USE_MARKET_FILTER", False)
-    # 필터가 꺼져있으면 기본값을 긍정으로 세팅하고 리턴
     if not use_filter:
         for code in ["001", "101"]:
             MARKET_STATUS[code]['is_bullish'] = True
@@ -388,27 +387,28 @@ async def check_market_index_status():
     if (now - MARKET_STATUS['last_check']).total_seconds() < 300:
         return
 
-    target_indices = ["001", "101"] # 001:코스피, 101:코스닥
+    # FinanceDataReader용 심볼 매핑 (001->KS11, 101->KQ11)
+    target_indices = {"001": "KS11", "101": "KQ11"}
 
-    for index_code in target_indices:
+    for index_code, fdr_symbol in target_indices.items():
         try:
             market_name = MARKET_STATUS[index_code]['name']
             
-            await GLOBAL_API_LIMITER.wait()
-            daily_data = await run_blocking(fn_ka10005_get_daily_chart, index_code)
+            # 키움 API 대신 FDR 사용 (속도제한 없음, 데이터 안정적)
+            start_date = (now - timedelta(days=100)).strftime("%Y-%m-%d")
+            
+            # run_blocking을 사용하여 fdr.DataReader 호출 (Blocking I/O 방지)
+            df = await run_blocking(fdr.DataReader, fdr_symbol, start_date)
 
-            if not daily_data or len(daily_data) < 20:
-                strategy_logger.warning(f"⚠️ [지수필터] {market_name} 데이터 부족. 필터 일시 해제.")
+            if df is None or len(df) < 20:
+                strategy_logger.warning(f"⚠️ [지수필터] {market_name} 데이터 부족(FDR). 필터 일시 해제.")
                 MARKET_STATUS[index_code]['is_bullish'] = True
                 continue
 
-            df = pd.DataFrame(daily_data)
-            df = df.iloc[::-1].reset_index(drop=True)
-            
-            df['close'] = df['stk_prc'].apply(lambda x: abs(float(x)) if x else 0)
-            df['MA20'] = df['close'].rolling(window=20).mean()
+            # FDR 데이터는 날짜 오름차순(오래된 것 -> 최신)으로 옴
+            df['MA20'] = df['Close'].rolling(window=20).mean()
 
-            current_close = df['close'].iloc[-1]
+            current_close = df['Close'].iloc[-1]
             current_ma20 = df['MA20'].iloc[-1]
 
             is_bullish = current_close >= current_ma20
@@ -633,8 +633,7 @@ async def load_settings_from_file():
             elif key == "TIME_CUT_MINUTES": val = int(val) if val is not None else 20
             elif key == "RSI_LIMIT": val = float(val) if val is not None else 70.0
             elif key == "USE_MARKET_FILTER": val = bool(val) if val is not None else False
-            # MARKET_INDEX_CODE는 제거됨 (이제 자동 감지)
-
+            
             if key in ["MORNING_START", "MORNING_COND", "LUNCH_START", "LUNCH_COND", "AFTERNOON_START", "AFTERNOON_COND", "OVERNIGHT_COND_IDS"]:
                  if val is not None: BOT_SETTINGS[key] = str(val)
             else:
@@ -723,6 +722,11 @@ async def save_status_to_file(force=False):
         for code, t in RE_ENTRY_COOLDOWN.items():
             if t > now: cooldown_data[code] = t.strftime('%Y-%m-%d %H:%M:%S')
 
+        # MARKET_STATUS 날짜 객체 안전하게 변환
+        market_status_safe = MARKET_STATUS.copy()
+        if isinstance(market_status_safe.get('last_check'), datetime):
+            market_status_safe['last_check'] = market_status_safe['last_check'].strftime('%Y-%m-%d %H:%M:%S')
+
         status_data = {
             "bot_status": display_status,
             "active_mode": "모의투자" if MOCK_TRADE else "REAL",
@@ -731,7 +735,6 @@ async def save_status_to_file(force=False):
             "trading_state": enriched_state,
             "account_summary": account_summary,
             "re_entry_cooldown": cooldown_data,
-            # 🌟 [수정] 대시보드 통신용 상태값 (지수 분리)
             "current_settings": { 
                  "use_ai_sl": BOT_SETTINGS.get("USE_AI_STOP_LOSS", True),
                  "ai_safety_limit": BOT_SETTINGS.get("AI_STOP_LOSS_SAFETY_LIMIT", -5.0),
@@ -739,8 +742,7 @@ async def save_status_to_file(force=False):
                  "rsi_limit": BOT_SETTINGS.get("RSI_LIMIT", 70.0),
                  "global_sl": BOT_SETTINGS.get("STOP_LOSS_RATE", -1.5),
                  "use_market_filter": BOT_SETTINGS.get("USE_MARKET_FILTER", False),
-                 # 상세 시장 상태
-                 "market_status": MARKET_STATUS
+                 "market_status": market_status_safe
             },
             "is_offline": False
         }

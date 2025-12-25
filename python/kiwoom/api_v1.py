@@ -294,19 +294,9 @@ def fn_ka10080_get_minute_chart(stock_code: str, tick: str = "3"):
             
     return all_chart_data if all_chart_data else None
 
-def fn_ka10005_get_daily_chart(stock_code: str):
-    params = { 
-        "stk_cd": stock_code, 
-        "upd_stkpc_tp": "1", 
-        "date_type": "1" 
-    }
-    response_data = _call_api(api_id="ka10005", params=params, is_high_priority=False)
-    if response_data:
-        chart_data = response_data.get('output2') or response_data.get('stk_day_pole_chart_qry') or []
-        return chart_data
-    return None
+# 🌟 fn_ka10005_get_daily_chart 삭제됨 (Strategy에서 fdr 사용)
 
-# 🌟 [수정] 종목별 시장(코스피/코스닥) 정보도 DB에 저장
+# 종목별 시장(코스피/코스닥) 정보도 DB에 저장
 def create_master_stock_file():
     """ 마스터 종목 파일 다운로드 및 DB 갱신 (하루 1회) """
     
