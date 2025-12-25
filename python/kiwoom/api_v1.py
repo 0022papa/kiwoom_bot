@@ -11,8 +11,6 @@ from datetime import datetime
 
 from login import fn_au10001
 from config import KIWOOM_HOST_URL, KIWOOM_ACCOUNT_NO, MOCK_TRADE, DEBUG_MODE as ENV_DEBUG
-
-# 🌟 [수정] DB 모듈 임포트
 from database import db
 
 # ---------------------------------------------------------
@@ -22,7 +20,6 @@ logger = logging.getLogger("API")
 API_LOCK = threading.RLock()
 CACHED_TOKEN = None
 
-# TCP 연결 재사용을 위한 전역 세션 (속도 최적화)
 API_SESSION = requests.Session()
 retries = Retry(total=3, backoff_factor=0.1, status_forcelist=[500, 502, 503, 504])
 API_SESSION.mount('http://', HTTPAdapter(max_retries=retries))
@@ -32,7 +29,6 @@ API_SESSION.mount('https://', HTTPAdapter(max_retries=retries))
 # 2. 유틸리티 클래스 및 함수
 # ---------------------------------------------------------
 class SmartRateLimiter:
-    """ API 요청 속도 제한을 관리하는 클래스 """
     def __init__(self):
         self.min_interval = 0.5
         self.max_interval = 5.0
@@ -102,6 +98,7 @@ def _call_api(api_id: str, params: dict, retry_count=0, is_high_priority=True, c
         if api_id.startswith('kt10') or api_id.startswith('kt5000'): endpoint = '/api/dostk/ordr'
         elif api_id.startswith('kt00') or api_id.startswith('ka10075'): endpoint = '/api/dostk/acnt'
         elif api_id.startswith('ka10080'): endpoint = '/api/dostk/chart' 
+        elif api_id.startswith('ka10005'): endpoint = '/api/dostk/chart'
         elif api_id.startswith('ka10001'): endpoint = '/api/dostk/stkinfo'
         elif api_id.startswith('ka10004'): endpoint = '/api/dostk/mrkcond'
         elif api_id.startswith('ka10074'): endpoint = '/api/dostk/acnt'
@@ -160,7 +157,7 @@ def _call_api(api_id: str, params: dict, retry_count=0, is_high_priority=True, c
             return None
 
 # ---------------------------------------------------------
-# 3. 계좌 관련 API (기존 유지)
+# 3. 계좌 및 기타 API
 # ---------------------------------------------------------
 def fn_kt00018_get_account_balance():
     params = { "acnt_no": KIWOOM_ACCOUNT_NO, "qry_tp": "1", "dmst_stex_tp": "KRX" }
@@ -204,9 +201,6 @@ def fn_ka10074_get_daily_profit():
             logger.error(f"일자별 손익 파싱 실패: {e}")
     return None
 
-# ---------------------------------------------------------
-# 4. 시세 및 정보 API (기존 유지)
-# ---------------------------------------------------------
 def fn_ka10001_get_stock_info(stock_code: str):
     params = { "stk_cd": stock_code }
     response_data = _call_api(api_id="ka10001", params=params)
@@ -300,15 +294,24 @@ def fn_ka10080_get_minute_chart(stock_code: str, tick: str = "3"):
             
     return all_chart_data if all_chart_data else None
 
-# 🌟 [수정] 마스터 파일 생성을 DB 저장으로 변경
+def fn_ka10005_get_daily_chart(stock_code: str):
+    params = { 
+        "stk_cd": stock_code, 
+        "upd_stkpc_tp": "1", 
+        "date_type": "1" 
+    }
+    response_data = _call_api(api_id="ka10005", params=params, is_high_priority=False)
+    if response_data:
+        chart_data = response_data.get('output2') or response_data.get('stk_day_pole_chart_qry') or []
+        return chart_data
+    return None
+
+# 🌟 [수정] 종목별 시장(코스피/코스닥) 정보도 DB에 저장
 def create_master_stock_file():
     """ 마스터 종목 파일 다운로드 및 DB 갱신 (하루 1회) """
     
-    # DB에서 마지막 업데이트 확인
     saved_master = db.get_kv("master_stocks")
     if saved_master:
-        # 간단하게 체크: 데이터가 있으면 스킵 (필요시 날짜 체크 로직 추가 가능)
-        # 하지만 여기서는 항상 최신화를 시도하되, 너무 잦은 호출 방지 로직은 상위에서 처리 권장
         pass
 
     try:
@@ -316,12 +319,19 @@ def create_master_stock_file():
         df_kospi = fdr.StockListing('KOSPI')
         df_kosdaq = fdr.StockListing('KOSDAQ')
         
+        # 1. 기본 마스터 (코드:이름) - 레거시 호환
         master_dict = {row['Code']: row['Name'] for _, row in df_kospi.iterrows()}
         master_dict.update({row['Code']: row['Name'] for _, row in df_kosdaq.iterrows()})
-        
-        # DB에 저장
         db.set_kv("master_stocks", master_dict)
-        logger.info(f"✅ 마스터 데이터 DB 저장 완료 ({len(master_dict)}개).")
+
+        # 2. 🌟 시장 구분 맵 (코드:시장구분) - 신규 기능
+        # KOSPI 종목
+        market_map = {row['Code']: 'KOSPI' for _, row in df_kospi.iterrows()}
+        # KOSDAQ 종목 (덮어쓰기로 혹시 모를 중복 방지)
+        market_map.update({row['Code']: 'KOSDAQ' for _, row in df_kosdaq.iterrows()})
+        db.set_kv("stock_market_map", market_map)
+
+        logger.info(f"✅ 마스터 데이터 DB 저장 완료 (종목: {len(master_dict)}개, 시장구분맵 생성됨).")
         
     except Exception as e:
         logger.error(f"마스터 데이터 생성 실패: {e}")

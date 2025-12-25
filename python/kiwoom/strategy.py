@@ -16,11 +16,9 @@ from datetime import datetime, timedelta
 from logging.handlers import TimedRotatingFileHandler
 from functools import partial
 
-# AI 및 DB 모듈 임포트
 from ai_analyst import create_chart_image, ask_ai_to_buy, init_ai_clients
-from database import db  # 🌟 DB 모듈 사용
+from database import db 
 
-# 기존 동기식 API 함수들 임포트
 from api_v1 import (
     create_master_stock_file, 
     fn_kt00018_get_account_balance,
@@ -31,6 +29,7 @@ from api_v1 import (
     fn_kt10003_cancel_order,
     fn_ka10004_get_hoga,
     fn_ka10080_get_minute_chart,
+    fn_ka10005_get_daily_chart,
     fn_ka10074_get_daily_profit,
     set_api_debug_mode
 )
@@ -86,6 +85,14 @@ TELEGRAM_QUEUE = asyncio.Queue()
 TODAY_REALIZED_PROFIT = 0
 LAST_PROFIT_CHECK_TIME = datetime.min
 CACHED_CONDITION_NAMES = {}
+STOCK_MARKET_MAP = {} # 🌟 [신규] 종목별 시장 구분 맵 (메모리 로드)
+
+# 🌟 [수정] 시장 지수 상태 (코스피/코스닥 분리)
+MARKET_STATUS = {
+    "001": { "name": "코스피", "is_bullish": True, "price": 0, "ma20": 0 },
+    "101": { "name": "코스닥", "is_bullish": True, "price": 0, "ma20": 0 },
+    "last_check": datetime.min
+}
 
 # ---------------------------------------------------------
 # 3. 전략 및 봇 기본 설정
@@ -118,8 +125,9 @@ DEFAULT_SETTINGS = {
     "OVERNIGHT_COND_IDS": "2",
     "USE_AI_STOP_LOSS": True,
     "AI_STOP_LOSS_SAFETY_LIMIT": -5.0,
-    "TIME_CUT_MINUTES": 20, # 🌟 [신규 설정] 타임컷 (기본 20분)
-    "RSI_LIMIT": 70.0       # 🌟 [신규 설정] RSI 과매수 제한 (기본 70.0)
+    "TIME_CUT_MINUTES": 20, 
+    "RSI_LIMIT": 70.0,
+    "USE_MARKET_FILTER": False # 🌟 지수 필터 사용 여부 (종목별 자동 적용)
 }
 BOT_SETTINGS = DEFAULT_SETTINGS.copy()
 
@@ -166,8 +174,21 @@ async def load_condition_names():
     except Exception as e:
         strategy_logger.error(f"조건식 이름 로드 실패: {e}")
 
+# 🌟 [신규] 종목별 시장 정보 로드
+async def load_stock_market_map():
+    global STOCK_MARKET_MAP
+    try:
+        data = await run_blocking(db.get_kv, "stock_market_map")
+        if data:
+            STOCK_MARKET_MAP = data
+            strategy_logger.info(f"📁 [DB] 종목별 시장 정보 로드 완료 ({len(STOCK_MARKET_MAP)}개)")
+        else:
+            strategy_logger.warning("⚠️ [DB] 종목별 시장 정보가 없습니다. 마스터 파일 생성을 기다립니다.")
+    except Exception as e:
+        strategy_logger.error(f"시장 정보 로드 실패: {e}")
+
 # ---------------------------------------------------------
-# 5. 텔레그램 및 리포트
+# 5. 텔레그램 및 리포트 (생략 - 위와 동일)
 # ---------------------------------------------------------
 async def _telegram_worker():
     import requests
@@ -285,7 +306,6 @@ async def send_daily_report():
         strategy_logger.error(f"리포트 생성 실패: {e}")
         strategy_logger.error(traceback.format_exc())
 
-# 🌟 [수정] custom_sl_rate 인자 추가 및 텔레그램 메시지 수정
 async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=0, profit_amt=0, peak_rate=0, image_path=None, ai_reason=None, custom_sl_rate=None):
     try:
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -313,7 +333,6 @@ async def log_trade(stock_code, stk_nm, action, qty, price, reason, profit_rate=
         tg_msg = f"{emoji} <b>체결 알림</b>"
         if action == "BUY" and ai_reason: tg_msg += f"\n🤖 <b>AI분석:</b> {ai_reason}"
         
-        # 🌟 [추가] 텔레그램 메세지에 AI 손절가 표시
         if action == "BUY" and custom_sl_rate is not None:
              tg_msg += f"\n📉 <b>설정손절:</b> {custom_sl_rate}%"
 
@@ -354,15 +373,65 @@ def is_market_open():
             return start <= current_time <= end
         return False
 
-# 🌟 [수정] RSI 필터 적용
+# 🌟 [수정] 지수 필터 체크 (코스피/코스닥 별도 관리)
+async def check_market_index_status():
+    global MARKET_STATUS
+    
+    use_filter = BOT_SETTINGS.get("USE_MARKET_FILTER", False)
+    # 필터가 꺼져있으면 기본값을 긍정으로 세팅하고 리턴
+    if not use_filter:
+        for code in ["001", "101"]:
+            MARKET_STATUS[code]['is_bullish'] = True
+        return
+
+    now = datetime.now()
+    if (now - MARKET_STATUS['last_check']).total_seconds() < 300:
+        return
+
+    target_indices = ["001", "101"] # 001:코스피, 101:코스닥
+
+    for index_code in target_indices:
+        try:
+            market_name = MARKET_STATUS[index_code]['name']
+            
+            await GLOBAL_API_LIMITER.wait()
+            daily_data = await run_blocking(fn_ka10005_get_daily_chart, index_code)
+
+            if not daily_data or len(daily_data) < 20:
+                strategy_logger.warning(f"⚠️ [지수필터] {market_name} 데이터 부족. 필터 일시 해제.")
+                MARKET_STATUS[index_code]['is_bullish'] = True
+                continue
+
+            df = pd.DataFrame(daily_data)
+            df = df.iloc[::-1].reset_index(drop=True)
+            
+            df['close'] = df['stk_prc'].apply(lambda x: abs(float(x)) if x else 0)
+            df['MA20'] = df['close'].rolling(window=20).mean()
+
+            current_close = df['close'].iloc[-1]
+            current_ma20 = df['MA20'].iloc[-1]
+
+            is_bullish = current_close >= current_ma20
+
+            MARKET_STATUS[index_code]['is_bullish'] = is_bullish
+            MARKET_STATUS[index_code]['price'] = current_close
+            MARKET_STATUS[index_code]['ma20'] = current_ma20
+            
+            status_str = "상승장(매수허용)" if is_bullish else "하락장(매수금지)"
+            strategy_logger.info(f"📉 [지수필터] {market_name}: 현재 {current_close} / 20일선 {current_ma20:.2f} -> {status_str}")
+
+        except Exception as e:
+            strategy_logger.error(f"지수 필터 체크 중 오류 ({index_code}): {e}")
+            MARKET_STATUS[index_code]['is_bullish'] = True
+            
+    MARKET_STATUS['last_check'] = now
+
 async def analyze_chart_pattern(stock_code, stock_name, condition_id="0"):
     try:
-        # 1. 3분봉 데이터 조회
         chart_data = await run_blocking(fn_ka10080_get_minute_chart, stock_code, tick="3")
         if not chart_data or len(chart_data) < 30: 
-            return True, None, None, 0  # 데이터 부족 시
+            return True, None, None, 0
 
-        # 2. 데이터 프레임 변환 (API는 최신순 -> DataFrame 뒤집어서 과거->최신순 정렬)
         df = pd.DataFrame(chart_data)
         df['close'] = df['cur_prc'].apply(lambda x: abs(int(x)) if x else 0)
         df['open'] = df['open_pric'].apply(lambda x: abs(int(x)) if x else 0)
@@ -372,10 +441,6 @@ async def analyze_chart_pattern(stock_code, stock_name, condition_id="0"):
         
         df = df.iloc[::-1].reset_index(drop=True)
 
-        # ---------------------------------------------------------
-        # 🛡️ [2차 필터] 기술적 지표 계산
-        # ---------------------------------------------------------
-        
         df['MA5'] = df['close'].rolling(window=5).mean()
         df['MA20'] = df['close'].rolling(window=20).mean()
         
@@ -390,24 +455,18 @@ async def analyze_chart_pattern(stock_code, stock_name, condition_id="0"):
             strategy_logger.info(f"🛡️ [기술적필터] {stock_code}: 추세 이탈 (현재가 < 20이평) -> 진입 포기")
             return False, None, "추세 이탈(역배열)", 0
 
-        # 🌟 [신규] RSI 필터: 과매수 구간 진입 금지 (설정값 사용)
         delta = df['close'].diff()
-        # NaN 값 처리 추가 (초기 데이터 안전장치)
         delta = delta.fillna(0)
         
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         
-        # 0으로 나누는 오류 방지
         rs = gain / loss.replace(0, 1) 
         df['RSI'] = 100 - (100 / (1 + rs))
         
         current_rsi = df.loc[current_idx, 'RSI']
-        
-        # RSI가 NaN인 경우 (데이터 부족) 50으로 처리하여 에러 방지
         if pd.isna(current_rsi): current_rsi = 50.0
 
-        # 설정된 RSI_LIMIT 값 가져오기
         rsi_limit = float(BOT_SETTINGS.get('RSI_LIMIT') or 70.0)
         
         if current_rsi > rsi_limit:
@@ -433,13 +492,9 @@ async def analyze_chart_pattern(stock_code, stock_name, condition_id="0"):
         if avg_vol_5 > 0 and current_vol < (avg_vol_5 * 0.3):
              pass 
 
-        # ---------------------------------------------------------
-        # 🤖 [3차 필터] AI 이미지 분석
-        # ---------------------------------------------------------
         image_path = await run_blocking(create_chart_image, stock_code, stock_name, chart_data)
         
         if image_path:
-            # 🌟 [수정] AI에게서 손절가(ai_sl_price)도 받아옴
             is_buy, reason, ai_sl_price = await run_blocking(ask_ai_to_buy, image_path, condition_id)
             if is_buy:
                 strategy_logger.info(f"🤖 [AI승인] {stock_name} ({stock_code}): 매수 추천! ({reason}) [AI손절가: {ai_sl_price}]")
@@ -573,19 +628,17 @@ async def load_settings_from_file():
             val = saved_settings.get(key)
             if key == "CONDITION_ID": val = str(val) if (val is not None and val != "") else "0"
             elif key == "USE_MARKET_TIME": val = bool(val) if val is not None else True
-            # 🌟 [추가] AI 설정 및 타임컷, RSI 설정 파싱
             elif key == "USE_AI_STOP_LOSS": val = bool(val) if val is not None else True
             elif key == "AI_STOP_LOSS_SAFETY_LIMIT": val = float(val) if val is not None else -5.0
             elif key == "TIME_CUT_MINUTES": val = int(val) if val is not None else 20
             elif key == "RSI_LIMIT": val = float(val) if val is not None else 70.0
+            elif key == "USE_MARKET_FILTER": val = bool(val) if val is not None else False
+            # MARKET_INDEX_CODE는 제거됨 (이제 자동 감지)
 
             if key in ["MORNING_START", "MORNING_COND", "LUNCH_START", "LUNCH_COND", "AFTERNOON_START", "AFTERNOON_COND", "OVERNIGHT_COND_IDS"]:
                  if val is not None: BOT_SETTINGS[key] = str(val)
             else:
                  BOT_SETTINGS[key] = val if val is not None else default_val
-
-        # 로그로 설정값 확인 (한 번만 출력하도록 로직 추가 가능하지만 여기선 확인용으로 둠)
-        # strategy_logger.debug(f"⚙️ 설정 로드: RSI제한({BOT_SETTINGS['RSI_LIMIT']}), 타임컷({BOT_SETTINGS['TIME_CUT_MINUTES']}분)")
 
         debug_val = BOT_SETTINGS.get("DEBUG_MODE", False)
         new_level = logging.DEBUG if debug_val else logging.INFO
@@ -631,7 +684,6 @@ async def save_status_to_file(force=False):
             if 'last_cancel_try' in info_copy and isinstance(info_copy['last_cancel_try'], datetime):
                 info_copy['last_cancel_try'] = info_copy['last_cancel_try'].strftime('%Y-%m-%d %H:%M:%S')
             
-            # 🌟 [수정] 대시보드 표시용 데이터 구성
             effective_sl = info.get('custom_sl_rate')
             if effective_sl is None:
                 effective_sl = BOT_SETTINGS.get('STOP_LOSS_RATE')
@@ -679,13 +731,16 @@ async def save_status_to_file(force=False):
             "trading_state": enriched_state,
             "account_summary": account_summary,
             "re_entry_cooldown": cooldown_data,
-            # 🌟 [신규] 대시보드로 현재 중요 설정 상태 전달 (AI 손절가, 타임컷, RSI 설정 포함)
+            # 🌟 [수정] 대시보드 통신용 상태값 (지수 분리)
             "current_settings": { 
                  "use_ai_sl": BOT_SETTINGS.get("USE_AI_STOP_LOSS", True),
                  "ai_safety_limit": BOT_SETTINGS.get("AI_STOP_LOSS_SAFETY_LIMIT", -5.0),
-                 "time_cut": BOT_SETTINGS.get("TIME_CUT_MINUTES", 20), # 🌟 추가됨
-                 "rsi_limit": BOT_SETTINGS.get("RSI_LIMIT", 70.0),     # 🌟 추가됨
-                 "global_sl": BOT_SETTINGS.get("STOP_LOSS_RATE", -1.5)
+                 "time_cut": BOT_SETTINGS.get("TIME_CUT_MINUTES", 20),
+                 "rsi_limit": BOT_SETTINGS.get("RSI_LIMIT", 70.0),
+                 "global_sl": BOT_SETTINGS.get("STOP_LOSS_RATE", -1.5),
+                 "use_market_filter": BOT_SETTINGS.get("USE_MARKET_FILTER", False),
+                 # 상세 시장 상태
+                 "market_status": MARKET_STATUS
             },
             "is_offline": False
         }
@@ -707,7 +762,7 @@ async def _load_initial_balance():
 
     old_condition_map = {}
     old_overnight_map = {}
-    old_sl_map = {}  # 🌟 [수정] 기존 AI 손절가 복구용 맵 추가
+    old_sl_map = {}
     RE_ENTRY_COOLDOWN = {}
 
     try:
@@ -719,7 +774,6 @@ async def _load_initial_balance():
                 if info.get('overnight_approved', False):
                     old_overnight_map[code] = True
                 
-                # 🌟 [수정] AI가 지정한 손절가가 있으면 복구
                 if info.get('custom_sl_rate'):
                     old_sl_map[code] = info['custom_sl_rate']
 
@@ -755,7 +809,6 @@ async def _load_initial_balance():
                 if restored_condition == "기존보유":
                     restored_condition = PENDING_ORDER_CONDITIONS.get(stock_code, "기존보유")
 
-                # 기본 데이터 구성
                 stock_data = {
                     "stk_nm": stk_nm, "buy_price": buy_price, "buy_qty": buy_qty,
                     "trailing_active": False, "peak_profit_rate": max(profit_rate, 0),
@@ -765,7 +818,6 @@ async def _load_initial_balance():
                     "overnight_approved": old_overnight_map.get(stock_code, False)
                 }
 
-                # 🌟 [수정] 복구된 AI 손절가가 있으면 적용
                 if stock_code in old_sl_map:
                     stock_data['custom_sl_rate'] = old_sl_map[stock_code]
                     strategy_logger.info(f"💾 [복구] {stk_nm}: AI 지정 손절가 {old_sl_map[stock_code]}% 복원됨")
@@ -867,6 +919,22 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
         try:
             strategy_logger.info(f"🔔 [조건포착] {stk_name} ({stock_code}) 분석 시작")
             
+            # 🌟 [수정] 종목별 시장 구분 후 맞춤형 필터 적용
+            if BOT_SETTINGS.get("USE_MARKET_FILTER", False):
+                # 1. 종목의 시장 찾기 (기본값 KOSPI)
+                market_type = STOCK_MARKET_MAP.get(stock_code, 'KOSPI') 
+                index_code = "101" if market_type == "KOSDAQ" else "001"
+                
+                # 2. 해당 시장의 지수 상태 확인
+                market_status = MARKET_STATUS.get(index_code, {})
+                is_bullish = market_status.get('is_bullish', True) # 기본값 True(안전)
+                
+                if not is_bullish:
+                    market_name = market_status.get('name', market_type)
+                    strategy_logger.warning(f"📉 [지수필터] {stk_name}({market_name}): 지수 하락장(20일선 이탈)으로 매수 금지됨")
+                    RE_ENTRY_COOLDOWN[stock_code] = datetime.now() + timedelta(minutes=10)
+                    return
+
             stock_info = None
             current_price = 0
             
@@ -889,13 +957,11 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                     await asyncio.sleep(0.2)
                 stk_nm = stock_info.get('종목명', stock_code) if stock_info else stock_code
 
-            # 🌟 [수정] 가격 정보가 0일 경우 차트 데이터에서 강제 추출 시도 (Fallback)
             if current_price <= 0:
                 try:
                     await GLOBAL_API_LIMITER.wait()
                     fallback_chart = await run_blocking(fn_ka10080_get_minute_chart, stock_code, tick="3")
                     if fallback_chart and len(fallback_chart) > 0:
-                        # API 응답의 0번 인덱스가 최신 데이터임 (api_v1.py 참조)
                         current_price = abs(int(fallback_chart[0]['cur_prc']))
                         strategy_logger.info(f"⚠️ [가격복구] {stock_code}: 기본정보 실패 -> 차트데이터로 가격({current_price}) 확보")
                 except Exception as e:
@@ -927,7 +993,6 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
 
             await GLOBAL_API_LIMITER.wait()
             
-            # 🌟 [수정] AI 손절가(ai_sl_price)도 받아오도록 변경
             is_good_chart, image_path, ai_reason, ai_sl_price = await analyze_chart_pattern(stock_code, stk_nm, condition_id)
             
             if not is_good_chart:
@@ -935,7 +1000,6 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                 return
 
             buy_qty = int((order_amount * 0.95) // current_price)
-            # 🌟 [추가] 매수 수량 0주 (예산 부족 등) 로그 출력
             if buy_qty == 0:
                 strategy_logger.warning(f"🚫 [진입불가] {stk_nm} ({stock_code}): 주문 가능 수량 0주 (예산 부족 또는 고가 종목)")
                 if image_path:
@@ -943,47 +1007,37 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                     except: pass
                 return
 
-            # 🌟 [완전 수정] AI 손절가 정밀 계산 로직 (수수료/세금 포함 실제 수익률 기준)
-            # ----------------------------------------------------------------------
             default_sl_rate = float(BOT_SETTINGS.get('STOP_LOSS_RATE') or -1.5)
             final_sl_rate = default_sl_rate
 
             if ai_sl_price > 0 and current_price > 0:
-                # 1. 수수료율 상수 정의 (manage_open_positions와 동일하게)
                 R_BUY_FEE_RATE = 0.0035 if MOCK_TRADE else 0.00015
                 R_SELL_FEE_RATE = 0.0035 if MOCK_TRADE else 0.00015
                 R_TAX_RATE = 0.0015
 
-                # 2. 예상 매매 금액 계산
                 pure_buy_amt = current_price * buy_qty
                 expected_sell_amt = ai_sl_price * buy_qty
                 
-                # 3. 비용 정밀 계산 (절사 포함)
                 buy_fee = int(pure_buy_amt * R_BUY_FEE_RATE)
                 sell_fee = int(expected_sell_amt * R_SELL_FEE_RATE)
                 tax = int(expected_sell_amt * R_TAX_RATE)
                 total_cost = buy_fee + sell_fee + tax
                 
-                # 4. 최종 순수익 및 수익률 계산
                 net_profit = expected_sell_amt - pure_buy_amt - total_cost
                 calc_rate = (net_profit / pure_buy_amt) * 100
                 
-                # 5. 🌟 [수정] 설정된 안전장치 값 사용
                 ai_safety_limit = float(BOT_SETTINGS.get('AI_STOP_LOSS_SAFETY_LIMIT') or -5.0)
                 if ai_safety_limit > 0: ai_safety_limit = -ai_safety_limit
 
-                # 계산된 손실률이 안전장치보다 크고(덜 위험하고), 0보다 작을 때(손실)만 AI 값 채택
                 if ai_safety_limit <= calc_rate < 0:
                     final_sl_rate = round(calc_rate, 2)
                     strategy_logger.info(f"🤖 [AI전략] {stk_nm}: AI가격 {ai_sl_price}원 -> 정밀계산 손절률 {final_sl_rate}% (예상비용 {total_cost}원 포함)")
                 else:
-                    # 🌟 [안전장치 발동] AI 손절가가 안전장치보다 낮으면(위험하면) 진입 포기
                     strategy_logger.info(f"🚫 [진입불가] {stk_nm}: AI 손절률({calc_rate:.2f}%)이 안전한계({ai_safety_limit}%)보다 낮아 위험합니다. 진입을 포기합니다.")
                     if image_path:
                         try: os.remove(image_path)
                         except: pass
                     return
-            # ----------------------------------------------------------------------
 
             BUY_ATTEMPT_HISTORY[stock_code] = datetime.now()
 
@@ -994,7 +1048,6 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
             ord_no = await run_blocking(fn_kt10000_buy_order, stock_code, buy_qty, price=0)
 
             if ord_no:
-                # 🌟 [수정] log_trade 호출 시 custom_sl_rate 전달
                 await log_trade(stock_code, stk_nm, "BUY", buy_qty, current_price, f"조건검색({condition_id})", image_path=image_path, ai_reason=ai_reason, custom_sl_rate=final_sl_rate)
                 TRADING_STATE[stock_code] = {
                     "stk_nm": stk_nm, "buy_price": current_price, "buy_qty": buy_qty,
@@ -1003,7 +1056,7 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                     "order_time": datetime.now(),
                     "condition_from": cond_info_str,
                     "ord_no": ord_no,
-                    "custom_sl_rate": final_sl_rate  # 🌟 저장: AI가 정한 손절률
+                    "custom_sl_rate": final_sl_rate
                 }
                 ws_manager.add_subscription(stock_code, "0B")
                 strategy_logger.info(f"✅ [주문성공] 주문번호: {ord_no}")
@@ -1039,10 +1092,8 @@ async def check_for_new_stocks():
         if event.get('type') != 'I': continue
         initial_price = event.get('price')
         
-        # 🌟 [추가] 로그용 종목명 확보
         stk_name = ws_manager.master_stock_names.get(stock_code, stock_code)
 
-        # 🌟 [수정] 각 조건별 진입 거절 로그 추가
         if stock_code in TRADING_STATE:
             strategy_logger.info(f"🚫 [진입거절] {stk_name} ({stock_code}): 이미 보유 중")
             continue
@@ -1092,7 +1143,6 @@ async def try_market_close_liquidation():
             if buy_qty > 0:
                 strategy_logger.info(f"🤖 [마감분석] {stk_nm}: 오버나잇 여부 AI 분석 중...")
                 
-                # [수정] 리턴값 개수 맞춤 (4개)
                 is_ok, _, ai_reason, _ = await analyze_chart_pattern(stock_code, stk_nm, "2")
                 
                 if is_ok:
@@ -1208,14 +1258,12 @@ async def manage_open_positions():
     global TRADING_STATE, RE_ENTRY_COOLDOWN, LAST_PRICE_CHECK_TIME, LAST_API_CALL_TIME
     if not TRADING_STATE: return
 
-    # 전역 설정값
     global_sl = float(BOT_SETTINGS.get('STOP_LOSS_RATE') or -1.5)
     apply_ts_start = float(BOT_SETTINGS.get('TRAILING_START_RATE') or 1.5)
     apply_ts_stop = float(BOT_SETTINGS.get('TRAILING_STOP_RATE') or -1.0)
     cooldown_min = BOT_SETTINGS.get('RE_ENTRY_COOLDOWN_MIN') or 30
     is_auto_sell_on = BOT_SETTINGS.get("USE_AUTO_SELL", False)
     
-    # 🌟 [신규] 토글 상태 가져오기 (기본값 True: AI 손절가 사용)
     use_ai_sl = BOT_SETTINGS.get('USE_AI_STOP_LOSS', True)
 
     R_BUY_FEE_RATE = 0.0035 if MOCK_TRADE else 0.00015
@@ -1261,20 +1309,15 @@ async def manage_open_positions():
 
             if not is_auto_sell_on: continue
 
-            # 🌟 [수정] 토글 설정에 따라 AI 손절가(custom_sl_rate) 사용 여부 결정
-            # use_ai_sl이 True이고, 종목에 custom_sl_rate가 있다면 그것을 사용
-            # 그렇지 않다면 전역 설정(global_sl) 사용
             apply_sl = global_sl
             if use_ai_sl and 'custom_sl_rate' in state:
                 apply_sl = state['custom_sl_rate']
 
             sell_reason = None
             if profit_rate <= apply_sl: 
-                # 로그에 AI 지정인지 표시
                 msg_type = "AI지정" if (use_ai_sl and 'custom_sl_rate' in state) else "설정"
                 sell_reason = f"손절({msg_type}) ({profit_rate:.2f}%)"
 
-            # 🌟 [신규] 타임컷 (Time-Cut) - 매수 후 20분 경과 & 수익률 0.5% 미만 시 매도
             if not sell_reason:
                 order_time = state.get('order_time')
                 if isinstance(order_time, str):
@@ -1283,11 +1326,8 @@ async def manage_open_positions():
                 
                 elapsed_min = (now - order_time).total_seconds() / 60
                 
-                # 🌟 [수정] 설정된 타임컷 시간 사용
                 time_cut_min = int(BOT_SETTINGS.get('TIME_CUT_MINUTES') or 20)
                 
-                # 타임컷 조건: 설정 시간 경과 AND 수익률 < 0.5% (지루함/탄력둔화)
-                # 0.5%는 수수료/세금을 제하고 거의 본전 수준이거나 약손실일 가능성이 큼
                 if elapsed_min > time_cut_min and profit_rate < 0.5:
                     sell_reason = f"타임컷(탄력둔화) ({profit_rate:.2f}%) - {int(elapsed_min)}분 경과"
 
@@ -1423,6 +1463,9 @@ async def main():
 
     await set_booting_status("BOOTING", target_mode=MOCK_TRADE)
     await run_blocking(create_master_stock_file)
+    
+    # 🌟 [신규] 시장 정보 로드 (마스터 파일 생성 후 수행해야 함)
+    await load_stock_market_map()
 
     BOT_SETTINGS = DEFAULT_SETTINGS.copy()
     await load_settings_from_file()
@@ -1544,6 +1587,8 @@ async def main():
                 await check_for_new_stocks()
 
                 if (datetime.now() - last_slow_check).total_seconds() > 2.0:
+                    await check_market_index_status() # 🌟 시장 상태 주기적 체크
+                    
                     await manage_open_positions()
                     await try_market_close_liquidation()
                     await try_morning_liquidation()

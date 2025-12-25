@@ -188,7 +188,6 @@ app.post('/api/settings', checkAuth, async (req, res) => {
         const settings = req.body;
         const parseNum = (val, def) => (isNaN(parseFloat(val)) ? def : parseFloat(val));
         
-        // --- [수정] 기본값 설정 (index.html의 UI 기본값과 일치) ---
         settings.ORDER_AMOUNT = parseNum(settings.ORDER_AMOUNT, 1000000);   // 1회 매수금
         settings.STOP_LOSS_RATE = parseNum(settings.STOP_LOSS_RATE, -2.0);  // 손절률
         settings.TRAILING_START_RATE = parseNum(settings.TRAILING_START_RATE, 4.0); // 익절 시작
@@ -196,15 +195,17 @@ app.post('/api/settings', checkAuth, async (req, res) => {
         settings.RE_ENTRY_COOLDOWN_MIN = parseNum(settings.RE_ENTRY_COOLDOWN_MIN, 10); // 쿨다운
         settings.MIN_BUY_SELL_RATIO = parseNum(settings.MIN_BUY_SELL_RATIO, 0.5);    // 호가 비율
         
-        // 🌟 [수정] strategy.py와 변수명 통일 (RSI_LIMIT, TIME_CUT_MINUTES)
-        settings.RSI_LIMIT = parseNum(settings.RSI_LIMIT, 70.0);       // 기본값 70.0 (과매수 제한)
-        settings.TIME_CUT_MINUTES = parseNum(settings.TIME_CUT_MINUTES, 20); // 기본값 20분
+        settings.RSI_LIMIT = parseNum(settings.RSI_LIMIT, 70.0);       // 과매수 제한
+        settings.TIME_CUT_MINUTES = parseNum(settings.TIME_CUT_MINUTES, 20); // 타임컷
 
         if(settings.OVERNIGHT_COND_IDS === undefined) settings.OVERNIGHT_COND_IDS = "";
         
         // AI 손절가 및 안전장치 값 저장
         if(settings.USE_AI_STOP_LOSS === undefined) settings.USE_AI_STOP_LOSS = true; 
         settings.AI_STOP_LOSS_SAFETY_LIMIT = parseNum(settings.AI_STOP_LOSS_SAFETY_LIMIT, -5.0);
+
+        // 🌟 [추가] 지수 필터 설정 (기본값 false)
+        if(settings.USE_MARKET_FILTER === undefined) settings.USE_MARKET_FILTER = false;
 
         await setKV("settings", settings);
         res.json({ success: true, message: 'Settings saved' });
