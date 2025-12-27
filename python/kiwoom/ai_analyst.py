@@ -5,6 +5,7 @@ import mplfinance as mpf
 import json
 import re
 import random
+import io
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from PIL import Image
@@ -53,7 +54,7 @@ def init_ai_clients():
 
 def create_chart_image(stock_code, stock_name, candle_data):
     """
-    API로 받은 캔들 데이터를 이미지 파일로 저장합니다.
+    API로 받은 캔들 데이터를 이미지 객체(BytesIO)로 변환합니다.
     """
     try:
         if not candle_data or len(candle_data) < 20:
@@ -94,23 +95,21 @@ def create_chart_image(stock_code, stock_name, candle_data):
         mc = mpf.make_marketcolors(up='red', down='blue', inherit=True)
         s = mpf.make_mpf_style(marketcolors=mc)
         
-        save_dir = "/data"
-        if not os.path.exists(save_dir):
-            os.makedirs(save_dir)
-            
-        file_path = f"{save_dir}/{stock_code}_chart.png"
+        # 메모리 버퍼 생성
+        buf = io.BytesIO()
         
         # 🌟 [수정 완료] title에서 한글 stock_name을 제거하고 stock_code만 표시하여 폰트 깨짐 방지
         mpf.plot(df, type='candle', mav=(5, 20), volume=True, style=s, 
                  title=f"CODE: {stock_code}", 
-                 savefig=dict(fname=file_path, dpi=100, bbox_inches='tight'))
+                 savefig=dict(fname=buf, dpi=100, bbox_inches='tight', format='png'))
         
-        return file_path
+        buf.seek(0)
+        return buf
     except Exception as e:
         ai_logger.error(f"차트 이미지 생성 실패: {e}")
         return None
 
-def ask_ai_to_buy(image_path, condition_id="0"):
+def ask_ai_to_buy(image_buffer, condition_id="0"):
     """
     Gemini Vision AI에게 차트를 보여주고 매수 여부와 손절가를 물어봅니다.
     """
@@ -119,11 +118,10 @@ def ask_ai_to_buy(image_path, condition_id="0"):
             ai_logger.error("⚠️ Google AI 클라이언트가 초기화되지 않았습니다.")
             return False, "API Client Not Initialized", 0
 
-        if not os.path.exists(image_path):
-            ai_logger.error("이미지 파일이 존재하지 않습니다.")
-            return False, "Image Error", 0
+        if not image_buffer:
+            return False, "Image Buffer Empty", 0
 
-        image = Image.open(image_path)
+        image = Image.open(image_buffer)
         
         # 전략별 프롬프트 정의
         prompts = {
