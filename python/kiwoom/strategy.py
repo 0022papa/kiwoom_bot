@@ -428,7 +428,7 @@ async def check_market_index_status():
 
 async def analyze_chart_pattern(stock_code, stock_name, condition_id="0"):
     try:
-        chart_data = await run_blocking(fn_ka10080_get_minute_chart, stock_code, tick="3")
+        chart_data = await run_blocking(fn_ka10080_get_minute_chart, stock_code, tick="1")
         if not chart_data or len(chart_data) < 30: 
             return True, None, None, 0
 
