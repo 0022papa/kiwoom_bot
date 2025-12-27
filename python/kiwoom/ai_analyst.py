@@ -77,7 +77,8 @@ def create_chart_image(stock_code, stock_name, candle_data):
         cols = ['Open', 'High', 'Low', 'Close', 'Volume']
         for col in cols:
             if col in df.columns:
-                df[col] = df[col].apply(lambda x: int(str(x).replace('+', '').replace('-', '').replace(',', '')))
+                # 벡터화 연산으로 최적화 (apply lambda 제거)
+                df[col] = df[col].astype(str).str.replace(r'[+-,]', '', regex=True).astype(int)
         
         # 날짜순 정렬 (과거 -> 현재)
         df = df.iloc[::-1] 

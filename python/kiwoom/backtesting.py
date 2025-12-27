@@ -1,7 +1,8 @@
 import logging
 import time
 import json
-from api_v1 import fn_ka10080_get_minute_chart
+import pandas as pd
+from api_v1 import fn_ka10080_get_minute_chart, safe_int
 from config import MOCK_TRADE, DEBUG_MODE
 
 # ---------------------------------------------------------
@@ -19,40 +20,6 @@ def debug_log(msg):
     if DEBUG_MODE:
         bt_logger.debug(f"🕵️ [Backtest] {msg}")
 
-def parse_price(price_str):
-    """ 가격 문자열을 정수로 변환합니다. (부호 제거) """
-    try:
-        if price_str is None: return 0
-        clean_str = str(price_str).replace('+', '').replace('-', '').strip()
-        if not clean_str: return 0
-        return int(clean_str)
-    except ValueError:
-        return 0
-
-def parse_candle_data(candle):
-    """ API 캔들 데이터를 내부 표준 형식으로 변환합니다. """
-    try:
-        # 시간: cntr_tm 우선, 없으면 che_tm
-        time_str = candle.get('cntr_tm') or candle.get('che_tm') or ""
-        
-        # 🌟 [수정] 올바른 필드명(xxx_pric)을 우선적으로 확인하도록 변경
-        open_p = parse_price(candle.get('open_pric') or candle.get('open_prc'))
-        high_p = parse_price(candle.get('high_pric') or candle.get('high_prc'))
-        low_p = parse_price(candle.get('low_pric') or candle.get('low_prc'))
-        close_p = parse_price(candle.get('cur_prc') or candle.get('stk_prc') or candle.get('close_prc'))
-        vol = parse_price(candle.get('trde_qty') or candle.get('vol'))
-        
-        return {
-            "time_str": time_str,
-            "open": open_p,
-            "high": high_p,
-            "low": low_p,
-            "close": close_p,
-            "volume": vol
-        }
-    except Exception:
-        return None
-        
 def format_result(code, bp, bt, sp, st, reason, chart_data=None):
     """ 백테스팅 결과 객체를 생성합니다. """
     if bp == 0: profit = 0.0
@@ -88,37 +55,50 @@ def simulate_trade(stock_code, entry_date_str, entry_time_str, settings):
     if not all_candles_raw:
         return format_result(stock_code, 0, "-", 0, "-", "차트 데이터 수신 실패")
 
-    # 2. 데이터 파싱 및 정렬
-    all_candles = []
-    for c in all_candles_raw:
-        parsed = parse_candle_data(c)
-        if parsed: all_candles.append(parsed)
-    
-    all_candles.sort(key=lambda x: x['time_str'])
-
-    if not all_candles:
+    # 2. 데이터 파싱 및 정렬 (Pandas 최적화)
+    df = pd.DataFrame(all_candles_raw)
+    if df.empty:
         return format_result(stock_code, 0, "-", 0, "-", "유효한 캔들 데이터 없음")
 
-    # 3. 진입 시점 찾기
-    first_date = all_candles[0]['time_str']
-    last_date = all_candles[-1]['time_str']
-    target_time_full = entry_date_str + entry_time_str
-    entry_index = -1
+    # 컬럼 매핑 및 전처리
+    df['time_str'] = df['cntr_tm'].fillna(df['che_tm'])
+    
+    # 벡터화된 정수 변환 (safe_int 로직 대체)
+    cols_map = {
+        'open': ['open_pric', 'open_prc'],
+        'high': ['high_pric', 'high_prc'],
+        'low': ['low_pric', 'low_prc'],
+        'close': ['cur_prc', 'stk_prc', 'close_prc'],
+        'volume': ['trde_qty', 'vol']
+    }
+    
+    for target, candidates in cols_map.items():
+        col_name = next((c for c in candidates if c in df.columns), None)
+        if col_name:
+            df[target] = df[col_name].astype(str).str.replace(r'[+-,]', '', regex=True).astype(int)
+        else:
+            df[target] = 0
 
-    for i, candle in enumerate(all_candles):
-        # 날짜가 일치하고 시간이 타겟 시간 이후인 첫 캔들
-        if candle['time_str'] >= target_time_full and candle['time_str'].startswith(entry_date_str):
-            entry_index = i
-            break
-            
-    if entry_index == -1:
+    df = df.sort_values('time_str').reset_index(drop=True)
+    all_candles = df.to_dict('records') # 결과 포맷용 (필요시)
+
+    # 3. 진입 시점 찾기
+    first_date = df.iloc[0]['time_str']
+    last_date = df.iloc[-1]['time_str']
+    target_time_full = entry_date_str + entry_time_str
+    
+    # 조건에 맞는 첫 번째 인덱스 탐색
+    entry_mask = (df['time_str'] >= target_time_full) & (df['time_str'].str.startswith(entry_date_str))
+    entry_indices = df.index[entry_mask]
+    
+    if entry_indices.empty:
         msg = f"진입불가 (데이터범위: {first_date[:8]}~{last_date[:8]})"
         return format_result(stock_code, 0, "-", 0, "-", msg)
 
     # 4. 매수 체결 가정 (해당 분봉 종가 기준)
-    entry_candle = all_candles[entry_index]
-    buy_price = entry_candle['close']
-    buy_time = entry_candle['time_str']
+    entry_index = entry_indices[0]
+    buy_price = df.at[entry_index, 'close']
+    buy_time = df.at[entry_index, 'time_str']
     
     if buy_price == 0:
          return format_result(stock_code, 0, "-", 0, "-", "매수 가격 오류 (0원)")
@@ -128,29 +108,30 @@ def simulate_trade(stock_code, entry_date_str, entry_time_str, settings):
     peak_profit_rate = 0.0
     final_result = None
     
-    for i in range(entry_index + 1, len(all_candles)):
-        candle = all_candles[i]
-        current_time = candle['time_str']
+    # itertuples가 iterrows보다 훨씬 빠름
+    subset_df = df.iloc[entry_index + 1:]
+    for row in subset_df.itertuples():
+        current_time = row.time_str
         
         # 날짜가 바뀌면 시초가 청산 (오버나잇)
         if not current_time.startswith(entry_date_str):
-             final_result = format_result(stock_code, buy_price, buy_time, candle['open'], current_time, "오버나잇 청산 (시가)", all_candles)
+             final_result = format_result(stock_code, buy_price, buy_time, row.open, current_time, "오버나잇 청산 (시가)", all_candles)
              break
 
         # 장 마감 강제 청산 (15:20 ~ 15:30)
         if current_time.endswith("152000") or current_time.endswith("153000"):
-             final_result = format_result(stock_code, buy_price, buy_time, candle['close'], current_time, "장 마감 청산", all_candles)
+             final_result = format_result(stock_code, buy_price, buy_time, row.close, current_time, "장 마감 청산", all_candles)
              break
 
         # 수익률 계산 (고가/저가 기준)
-        low_profit = ((candle['low'] - buy_price) / buy_price) * 100
-        high_profit = ((candle['high'] - buy_price) / buy_price) * 100
+        low_profit = ((row.low - buy_price) / buy_price) * 100
+        high_profit = ((row.high - buy_price) / buy_price) * 100
 
         # [조건 1] 손절매 (Stop Loss) - 저가가 손절선 터치
         if low_profit <= stop_loss:
             target_sl_price = buy_price * (1 + stop_loss / 100)
             # 갭하락으로 손절가보다 더 낮게 시작했을 경우 시가 매도 처리
-            real_sell_price = candle['open'] if candle['open'] < target_sl_price else target_sl_price
+            real_sell_price = row.open if row.open < target_sl_price else target_sl_price
             
             final_result = format_result(stock_code, buy_price, buy_time, int(real_sell_price), current_time, f"손절 ({stop_loss}%)", all_candles)
             break
@@ -170,19 +151,19 @@ def simulate_trade(stock_code, entry_date_str, entry_time_str, settings):
             target_profit_price = buy_price * (1 + target_drop_rate / 100)
             
             # 현재 봉의 저가가 트레일링 익절선을 건드렸는지 확인
-            current_low_rate = ((candle['low'] - buy_price) / buy_price) * 100
+            current_low_rate = ((row.low - buy_price) / buy_price) * 100
             
             if current_low_rate <= target_drop_rate:
                 # 갭하락 시 시가 매도
-                real_sell_price = candle['open'] if candle['open'] < target_profit_price else target_profit_price
+                real_sell_price = row.open if row.open < target_profit_price else target_profit_price
                 
                 final_result = format_result(stock_code, buy_price, buy_time, int(real_sell_price), current_time, f"익절 ({target_drop_rate:.2f}%)", all_candles)
                 break
 
     # 6. 루프 종료 시까지 매도 안됨
     if not final_result:
-        last = all_candles[-1]
-        final_result = format_result(stock_code, buy_price, buy_time, last['close'], last['time_str'], "미청산 종료", all_candles)
+        last_row = df.iloc[-1]
+        final_result = format_result(stock_code, buy_price, buy_time, last_row['close'], last_row['time_str'], "미청산 종료", all_candles)
         
     return final_result
 

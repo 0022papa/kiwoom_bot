@@ -32,6 +32,7 @@ from api_v1 import (
     fn_ka10080_get_minute_chart,
     # fn_ka10005_get_daily_chart,  <-- 삭제됨
     fn_ka10074_get_daily_profit,
+    safe_int,
     set_api_debug_mode
 )
 from config import MOCK_TRADE, KIWOOM_ACCOUNT_NO, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
@@ -156,14 +157,6 @@ async def run_blocking(func, *args, **kwargs):
 
 def debug_log(msg):
     strategy_logger.debug(f"{msg}")
-
-def parse_price(price_str):
-    try:
-        if price_str is None: return 0
-        clean_str = str(price_str).strip().replace('+', '').replace('-', '')
-        if not clean_str: return 0
-        return int(clean_str)
-    except ValueError: return 0
 
 async def load_condition_names():
     global CACHED_CONDITION_NAMES
@@ -434,11 +427,11 @@ async def analyze_chart_pattern(stock_code, stock_name, condition_id="0"):
             return False, None, "데이터 부족", 0
 
         df = pd.DataFrame(chart_data)
-        df['close'] = df['cur_prc'].apply(parse_price)
-        df['open'] = df['open_pric'].apply(parse_price)
-        df['high'] = df['high_pric'].apply(parse_price)
-        df['low'] = df['low_pric'].apply(parse_price)
-        df['volume'] = df['trde_qty'].apply(parse_price)
+        # safe_int 대신 벡터화 연산 사용 (속도 최적화)
+        for col, key in [('close', 'cur_prc'), ('open', 'open_pric'), ('high', 'high_pric'), ('low', 'low_pric'), ('volume', 'trde_qty')]:
+            if key in df.columns:
+                df[col] = df[key].astype(str).str.replace(r'[+-,]', '', regex=True).astype(int)
+            else: df[col] = 0
         
         df = df.iloc[::-1].reset_index(drop=True)
 
@@ -1177,7 +1170,7 @@ async def try_morning_liquidation():
                     if not price_data: price_data = ws_manager.get_realtime_data(stock_code, "00")
                     if price_data:
                         raw_price = price_data.get('10') or price_data.get('cur_prc')
-                        current_price = parse_price(raw_price)
+                        current_price = safe_int(raw_price)
 
                     if current_price == 0:
                         info = await run_blocking(fn_ka10001_get_stock_info, stock_code)
@@ -1271,7 +1264,7 @@ async def manage_open_positions():
             if not price_data: price_data = ws_manager.get_realtime_data(stock_code, "00")
 
             raw_price = price_data.get('10') or price_data.get('cur_prc')
-            current_price = parse_price(raw_price)
+            current_price = safe_int(raw_price)
 
             if current_price == 0:
                 if (now - BOT_START_TIME).total_seconds() < 5.0: continue
@@ -1368,7 +1361,7 @@ async def _handle_realtime_account(account_data_type):
 
         if stock_code in TRADING_STATE and "체결" in order_status:
             debug_log(f"실시간 체결 확인: {stock_code} {order_status}")
-            trade_price = parse_price(data.get('910', '0'))
+            trade_price = safe_int(data.get('910', '0'))
             trade_qty = int(data.get('911', '0'))
             if trade_price > 0 and "+매수" in order_type:
                 TRADING_STATE[stock_code]['buy_price'] = trade_price

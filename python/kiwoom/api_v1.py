@@ -62,7 +62,7 @@ def set_api_debug_mode(mode: bool):
     level = logging.DEBUG if mode else logging.INFO
     logger.setLevel(level)
 
-def _safe_int(value):
+def safe_int(value):
     try:
         if value is None: return 0
         if isinstance(value, int): return value
@@ -90,71 +90,70 @@ def _call_api(api_id: str, params: dict, retry_count=0, is_high_priority=True, c
     if not is_high_priority: time.sleep(0.05)
 
     with API_LOCK:
-        RATE_LIMITER.wait() 
+        current_retry = retry_count
+        max_retries = 2
 
-        token = _get_valid_token(force_refresh=False)
-        if not token: return None
+        while current_retry <= max_retries:
+            RATE_LIMITER.wait()
+            token = _get_valid_token(force_refresh=(current_retry > 0))
+            if not token: return None
 
-        if api_id.startswith('kt10') or api_id.startswith('kt5000'): endpoint = '/api/dostk/ordr'
-        elif api_id.startswith('kt00') or api_id.startswith('ka10075'): endpoint = '/api/dostk/acnt'
-        elif api_id.startswith('ka10080'): endpoint = '/api/dostk/chart' 
-        elif api_id.startswith('ka10005'): endpoint = '/api/dostk/chart'
-        elif api_id.startswith('ka10001'): endpoint = '/api/dostk/stkinfo'
-        elif api_id.startswith('ka10004'): endpoint = '/api/dostk/mrkcond'
-        elif api_id.startswith('ka10074'): endpoint = '/api/dostk/acnt'
-        else: endpoint = '/api/dostk/stkinfo'
-            
-        url = KIWOOM_HOST_URL + endpoint
-        
-        headers = {
-            'Content-Type': 'application/json;charset=UTF-8',
-            'authorization': f"Bearer {token}",
-            'api-id': api_id,
-            'cont-yn': cont_yn,
-            'next-key': next_key
-        }
+            if api_id.startswith('kt10') or api_id.startswith('kt5000'): endpoint = '/api/dostk/ordr'
+            elif api_id.startswith('kt00') or api_id.startswith('ka10075'): endpoint = '/api/dostk/acnt'
+            elif api_id.startswith('ka10080'): endpoint = '/api/dostk/chart'
+            elif api_id.startswith('ka10005'): endpoint = '/api/dostk/chart'
+            elif api_id.startswith('ka10001'): endpoint = '/api/dostk/stkinfo'
+            elif api_id.startswith('ka10004'): endpoint = '/api/dostk/mrkcond'
+            elif api_id.startswith('ka10074'): endpoint = '/api/dostk/acnt'
+            else: endpoint = '/api/dostk/stkinfo'
 
-        start_time = time.time()
-        try:
-            if CURRENT_DEBUG_MODE:
-                logger.debug(f"📤 [REQ] {api_id} Params: {params} | Head(Next): {next_key}")
+            url = KIWOOM_HOST_URL + endpoint
+            headers = {
+                'Content-Type': 'application/json;charset=UTF-8',
+                'authorization': f"Bearer {token}",
+                'api-id': api_id,
+                'cont-yn': cont_yn,
+                'next-key': next_key
+            }
 
-            response = API_SESSION.post(url, headers=headers, json=params, timeout=10)
-            duration = (time.time() - start_time) * 1000
+            start_time = time.time()
+            try:
+                if CURRENT_DEBUG_MODE:
+                    logger.debug(f"📤 [REQ] {api_id} Params: {params} | Head(Next): {next_key}")
 
-            if CURRENT_DEBUG_MODE:
-                data_len = len(response.text) if response.text else 0
-                logger.debug(f"📥 [RES] {response.status_code} ({duration:.0f}ms) Size: {data_len}B")
+                response = API_SESSION.post(url, headers=headers, json=params, timeout=10)
+                duration = (time.time() - start_time) * 1000
 
-            if response.status_code == 429:
-                new_interval = RATE_LIMITER.report_429()
-                wait_time = 2.0 * (retry_count + 1)
-                logger.warning(f"🔥 [429] 속도제한! 간격 {new_interval:.2f}s로 증가, {wait_time}s 대기")
-                time.sleep(wait_time)
-                if retry_count < 1:
-                    return _call_api(api_id, params, retry_count + 1, is_high_priority, cont_yn, next_key, return_headers)
+                if CURRENT_DEBUG_MODE:
+                    data_len = len(response.text) if response.text else 0
+                    logger.debug(f"📥 [RES] {response.status_code} ({duration:.0f}ms) Size: {data_len}B")
+
+                if response.status_code == 429:
+                    new_interval = RATE_LIMITER.report_429()
+                    wait_time = 2.0 * (current_retry + 1)
+                    logger.warning(f"🔥 [429] 속도제한! 간격 {new_interval:.2f}s로 증가, {wait_time}s 대기")
+                    time.sleep(wait_time)
+                    current_retry += 1
+                    continue
+
+                if response.status_code == 401 or response.status_code == 403:
+                    logger.warning("⚠️ 토큰 만료. 재발급 시도...")
+                    current_retry += 1
+                    continue
+
+                if response.status_code != 200:
+                    logger.error(f"API HTTP 오류 ({response.status_code}): {response.text[:100]}...")
+                    return None
+
+                RATE_LIMITER.report_success()
+                if return_headers:
+                    return response.json(), response.headers
+                return response.json()
+
+            except Exception as e:
+                logger.error(f"API 호출 중 오류 (TR: {api_id}): {e}")
                 return None
-
-            if response.status_code == 401 or response.status_code == 403:
-                logger.warning("⚠️ 토큰 만료. 재발급 시도...")
-                if retry_count < 2:
-                    _get_valid_token(force_refresh=True)
-                    return _call_api(api_id, params, retry_count + 1, is_high_priority, cont_yn, next_key, return_headers)
-                return None
-
-            if response.status_code != 200:
-                logger.error(f"API HTTP 오류 ({response.status_code}): {response.text[:100]}...")
-                return None
-
-            RATE_LIMITER.report_success()
-            
-            if return_headers:
-                return response.json(), response.headers
-            return response.json()
-
-        except Exception as e:
-            logger.error(f"API 호출 중 오류 (TR: {api_id}): {e}")
-            return None
+        return None
 
 # ---------------------------------------------------------
 # 3. 계좌 및 기타 API
@@ -165,11 +164,11 @@ def fn_kt00018_get_account_balance():
     if response_data:
         try:
             summary = {
-                "총매입금액": _safe_int(response_data.get('tot_pur_amt')),
-                "총평가금액": _safe_int(response_data.get('tot_evlt_amt')),
-                "총평가손익": _safe_int(response_data.get('tot_evlt_pl')),
+                "총매입금액": safe_int(response_data.get('tot_pur_amt')),
+                "총평가금액": safe_int(response_data.get('tot_evlt_amt')),
+                "총평가손익": safe_int(response_data.get('tot_evlt_pl')),
                 "총수익률(%)": float(response_data.get('tot_prft_rt', 0.0)),
-                "추정예탁자산": _safe_int(response_data.get('prsm_dpst_aset_amt')),
+                "추정예탁자산": safe_int(response_data.get('prsm_dpst_aset_amt')),
                 "보유종목": response_data.get('acnt_evlt_remn_indv_tot', []) 
             }
             return summary
@@ -182,7 +181,7 @@ def fn_kt00001_get_deposit():
     if response_data:
         try:
             deposit = (response_data.get('mny_ord_able_amt') or response_data.get('ord_psbl_amt') or response_data.get('entr'))
-            return _safe_int(deposit)
+            return safe_int(deposit)
         except Exception: return 0
     return 0
 
@@ -193,10 +192,10 @@ def fn_ka10074_get_daily_profit():
     if response_data:
         try:
             profit = response_data.get('rlzt_pl')
-            if profit is not None: return _safe_int(profit)
+            if profit is not None: return safe_int(profit)
             data_list = response_data.get('dt_rlzt_pl', [])
             if data_list and len(data_list) > 0:
-                return _safe_int(data_list[0].get('tdy_sel_pl', 0))
+                return safe_int(data_list[0].get('tdy_sel_pl', 0))
         except Exception as e:
             logger.error(f"일자별 손익 파싱 실패: {e}")
     return None
@@ -209,10 +208,10 @@ def fn_ka10001_get_stock_info(stock_code: str):
             info = {
                 "종목코드": response_data.get('stk_cd'),
                 "종목명": response_data.get('stk_nm'),
-                "현재가": _safe_int(response_data.get('cur_prc')),
-                "기준가": _safe_int(response_data.get('std_prc') or response_data.get('bf_cls_prc')),
-                "시가": _safe_int(response_data.get('open_pric') or response_data.get('open_prc')),
-                "예상체결가": _safe_int(response_data.get('exp_cntr_pric') or response_data.get('exp_cntr_prc'))
+                "현재가": safe_int(response_data.get('cur_prc')),
+                "기준가": safe_int(response_data.get('std_prc') or response_data.get('bf_cls_prc')),
+                "시가": safe_int(response_data.get('open_pric') or response_data.get('open_prc')),
+                "예상체결가": safe_int(response_data.get('exp_cntr_pric') or response_data.get('exp_cntr_prc'))
             }
             return info
         except Exception: return None
@@ -260,9 +259,9 @@ def fn_ka10004_get_hoga(stock_code: str):
             buy_keys = ['tot_buy_req', 'tot_buy_pr_ord_remn_qty', 'tot_buy_remn', 'total_buy_remn_qty']
             sell_total = 0; buy_total = 0
             for k in sell_keys:
-                if response_data.get(k): sell_total = _safe_int(response_data.get(k)); break
+                if response_data.get(k): sell_total = safe_int(response_data.get(k)); break
             for k in buy_keys:
-                if response_data.get(k): buy_total = _safe_int(response_data.get(k)); break
+                if response_data.get(k): buy_total = safe_int(response_data.get(k)); break
             return { "sell_total": sell_total, "buy_total": buy_total }
         except Exception: return None
     return None
