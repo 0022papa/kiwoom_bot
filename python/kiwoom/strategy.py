@@ -433,11 +433,11 @@ async def analyze_chart_pattern(stock_code, stock_name, condition_id="0"):
             return True, None, None, 0
 
         df = pd.DataFrame(chart_data)
-        df['close'] = df['cur_prc'].apply(lambda x: abs(int(x)) if x else 0)
-        df['open'] = df['open_pric'].apply(lambda x: abs(int(x)) if x else 0)
-        df['high'] = df['high_pric'].apply(lambda x: abs(int(x)) if x else 0)
-        df['low'] = df['low_pric'].apply(lambda x: abs(int(x)) if x else 0)
-        df['volume'] = df['trde_qty'].apply(lambda x: int(x) if x else 0)
+        df['close'] = df['cur_prc'].apply(parse_price)
+        df['open'] = df['open_pric'].apply(parse_price)
+        df['high'] = df['high_pric'].apply(parse_price)
+        df['low'] = df['low_pric'].apply(parse_price)
+        df['volume'] = df['trde_qty'].apply(parse_price)
         
         df = df.iloc[::-1].reset_index(drop=True)
 
@@ -1353,7 +1353,10 @@ async def manage_open_positions():
                 ord_no = await run_blocking(fn_kt10001_sell_order, stock_code, buy_qty, price=0)
                 if ord_no:
                     peak = state.get('peak_profit_rate', 0.0)
-                    est_profit = (current_price * buy_qty) - (buy_price * buy_qty) - (current_price * buy_qty * 0.0023)
+                    
+                    # [수정] 하드코딩된 수수료(0.0023) 대신 설정된 요율 사용 (모의/실전 반영)
+                    total_fee = int(current_price * buy_qty * (R_SELL_FEE_RATE + R_TAX_RATE)) + int(buy_price * buy_qty * R_BUY_FEE_RATE)
+                    est_profit = (current_price * buy_qty) - (buy_price * buy_qty) - total_fee
                     await log_trade(stock_code, stk_nm, "SELL", buy_qty, current_price, sell_reason, profit_rate, profit_amt=est_profit, peak_rate=peak)
 
                     TRADING_STATE[stock_code]['status'] = "매도주문중"
