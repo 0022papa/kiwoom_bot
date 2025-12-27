@@ -1163,7 +1163,10 @@ async def try_morning_liquidation():
             cond_info = state.get('condition_from', '')
             cond_id = cond_info.split(':')[0] if ':' in cond_info else '999'
 
-            is_target = (cond_id in OVERNIGHT_CONDITION_IDS) or state.get('overnight_approved', False)
+            # [수정] 오버나잇 조건식뿐만 아니라, '기존보유' 종목도 장 시작 대응 대상에 포함
+            is_target = (cond_id in OVERNIGHT_CONDITION_IDS) or \
+                        state.get('overnight_approved', False) or \
+                        (cond_id in ["기존보유", "외부매수/동기화"])
 
             if is_target:
                 stk_nm = state.get('stk_nm', stock_code)
