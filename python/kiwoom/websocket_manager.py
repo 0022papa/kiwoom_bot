@@ -81,25 +81,15 @@ class KiwoomWebSocketManager:
         ws_logger.setLevel(level)
 
     def _load_master_file(self):
-        """ 종목 코드-이름 매핑 데이터를 DB 또는 파일에서 로드합니다. """
+        """ 종목 코드-이름 매핑 데이터를 DB에서 로드합니다. """
         try:
-            # 1. DB에서 먼저 조회
+            # DB에서 조회
             db_data = db.get_kv("master_stocks")
             if db_data:
                 self.master_stock_names = db_data
                 ws_logger.info(f"📚 [DB] 마스터 종목 사전 로드 완료 ({len(self.master_stock_names)}개)")
             else:
-                # 2. DB에 없으면 파일에서 읽어서 DB로 마이그레이션 (호환성 유지)
-                file_path = "/data/master_stocks.json"
-                if os.path.exists(file_path):
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        self.master_stock_names = json.load(f)
-                    
-                    # DB에 저장
-                    db.set_kv("master_stocks", self.master_stock_names)
-                    ws_logger.info(f"📚 [파일->DB] 마스터 종목 동기화 완료 ({len(self.master_stock_names)}개)")
-                else:
-                    ws_logger.warning("⚠️ 마스터 데이터가 없습니다. (api_v1에서 생성 필요)")
+                ws_logger.warning("⚠️ 마스터 데이터가 없습니다. (api_v1에서 생성 필요)")
         except Exception as e:
             ws_logger.error(f"마스터 데이터 로드 중 오류: {e}")
 

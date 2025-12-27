@@ -26,37 +26,6 @@ def save_token_to_db(token_data):
     except Exception as e:
         login_logger.error(f"토큰 저장 실패: {e}")
 
-def _migrate_token_file_to_db(key):
-    """ [복구용] 기존 JSON 파일에 있는 토큰을 DB로 마이그레이션 합니다. """
-    try:
-        filename = "token_mock.json" if "mock" in key else "token_real.json"
-        
-        candidates = [
-            os.path.join("/data", filename),
-            os.path.join(os.getcwd(), filename),
-            os.path.join("/data/kiwoom_bot_data", filename),
-            f"/app/{filename}"
-        ]
-        
-        for p in candidates:
-            if os.path.exists(p):
-                try:
-                    with open(p, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                        if data.get('token') and data.get('expires_at'):
-                            expires_at = datetime.strptime(data['expires_at'], '%Y-%m-%d %H:%M:%S')
-                            if datetime.now() < expires_at:
-                                save_token_to_db(data)
-                                login_logger.info(f"♻️ [마이그레이션] 기존 토큰 파일({filename})을 DB로 복구했습니다.")
-                                return data
-                            else:
-                                pass 
-                except Exception:
-                    continue
-    except Exception as e:
-        login_logger.warning(f"토큰 마이그레이션 중 오류: {e}")
-    return None
-
 def load_token_from_db():
     """ DB에서 유효한 토큰을 불러옵니다. """
     key = "token_mock" if MOCK_TRADE else "token_real"
@@ -66,9 +35,6 @@ def load_token_from_db():
         token_data = db.get_kv(key)
     except Exception: pass
     
-    if not token_data:
-        token_data = _migrate_token_file_to_db(key)
-
     if token_data:
         try:
             expires_at = datetime.strptime(token_data['expires_at'], '%Y-%m-%d %H:%M:%S')
