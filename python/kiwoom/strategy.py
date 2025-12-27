@@ -430,7 +430,8 @@ async def analyze_chart_pattern(stock_code, stock_name, condition_id="0"):
     try:
         chart_data = await run_blocking(fn_ka10080_get_minute_chart, stock_code, tick="1")
         if not chart_data or len(chart_data) < 30: 
-            return True, None, None, 0
+            # [수정] 데이터 부족 시 보수적으로 '거절(False)' 리턴 (오버나잇 방지)
+            return False, None, "데이터 부족", 0
 
         df = pd.DataFrame(chart_data)
         df['close'] = df['cur_prc'].apply(parse_price)
@@ -451,10 +452,6 @@ async def analyze_chart_pattern(stock_code, stock_name, condition_id="0"):
         ma5 = df.loc[current_idx, 'MA5']
         ma20 = df.loc[current_idx, 'MA20']
         
-        if current_close < ma20:
-            strategy_logger.info(f"🛡️ [기술적필터] {stock_code}: 추세 이탈 (현재가 < 20이평) -> 진입 포기")
-            return False, None, "추세 이탈(역배열)", 0
-
         delta = df['close'].diff()
         delta = delta.fillna(0)
         
@@ -504,7 +501,8 @@ async def analyze_chart_pattern(stock_code, stock_name, condition_id="0"):
                 strategy_logger.info(f"🛡️ [AI거절] {stock_name} ({stock_code}): 매수 보류 ({reason})")
                 return False, None, reason, 0
         
-        return True, None, None, 0
+        # [수정] 이미지 생성 실패 등 분석 불가 시 '거절(False)' 리턴
+        return False, None, "차트 이미지 생성 실패", 0
 
     except Exception as e:
         strategy_logger.error(f"차트 분석 중 오류 ({stock_code}): {e}")
