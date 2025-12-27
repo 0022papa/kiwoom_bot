@@ -83,10 +83,10 @@ def create_chart_image(stock_code, stock_name, candle_data):
         df = df.iloc[::-1] 
         df.index = pd.to_datetime(df['Date'], format='%Y%m%d%H%M%S')
         
-        # 데이터 과다 방지: 가장 최근 데이터 기준 2일 전까지만 자르기
+        # 데이터 과다 방지: 가장 최근 데이터 기준 1일 전까지만 자르기
         if not df.empty:
             last_date = df.index[-1]
-            cutoff_date = last_date - timedelta(days=2)
+            cutoff_date = last_date - timedelta(days=1)
             df = df[df.index >= cutoff_date]
 
             if len(df) < 30 and len(candle_data) >= 30:
