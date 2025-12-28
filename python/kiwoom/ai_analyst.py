@@ -1,6 +1,9 @@
 import os
 import logging
 import pandas as pd
+import matplotlib
+# 서버(Headless) 환경에서 GUI 창을 띄우지 않도록 설정 (mplfinance import 전 필수)
+matplotlib.use('Agg')
 import mplfinance as mpf
 import json
 import re

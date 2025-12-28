@@ -272,7 +272,7 @@ class KiwoomWebSocketManager:
                         self._process_realtime_data(data.get('data', []))
                         
                 except json.JSONDecodeError:
-                    pass 
+                    ws_logger.warning(f"⚠️ [WS] 수신 데이터 JSON 파싱 실패: {message[:100]}...")
                 except Exception as e:
                     ws_logger.error(f"데이터 처리 중 오류: {e}")
         

@@ -992,6 +992,10 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                 RE_ENTRY_COOLDOWN[stock_code] = datetime.now() + timedelta(minutes=10)
                 return
 
+            if current_price <= 0:
+                strategy_logger.warning(f"🚫 [진입불가] {stk_nm}: 현재가 오류 ({current_price})")
+                return
+
             buy_qty = int((order_amount * 0.95) // current_price)
             if buy_qty == 0:
                 strategy_logger.warning(f"🚫 [진입불가] {stk_nm} ({stock_code}): 주문 가능 수량 0주 (예산 부족 또는 고가 종목)")
