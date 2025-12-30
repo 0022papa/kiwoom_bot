@@ -488,8 +488,13 @@ async def analyze_chart_pattern(stock_code, stock_name, condition_id="0"):
         if image_buf:
             is_buy, reason, ai_sl_price = await run_blocking(ask_ai_to_buy, image_buf, condition_id)
             if is_buy:
+                # 텔레그램 전송을 위해 이미지를 임시 파일로 저장
+                temp_path = f"/tmp/{stock_code}_{int(time.time())}.png"
+                with open(temp_path, "wb") as f:
+                    f.write(image_buf.getbuffer())
+
                 strategy_logger.info(f"🤖 [AI승인] {stock_name} ({stock_code}): 매수 추천! ({reason}) [AI손절가: {ai_sl_price}]")
-                return True, None, reason, ai_sl_price # image_path는 이제 없음(None)
+                return True, temp_path, reason, ai_sl_price
             else:
                 strategy_logger.info(f"🛡️ [AI거절] {stock_name} ({stock_code}): 매수 보류 ({reason})")
                 return False, None, reason, 0
@@ -985,20 +990,23 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
 
             await GLOBAL_API_LIMITER.wait()
             
-            # image_path는 이제 반환되지 않으므로 None 처리됨
-            is_good_chart, _, ai_reason, ai_sl_price = await analyze_chart_pattern(stock_code, stk_nm, condition_id)
+            # AI 분석 및 차트 이미지 경로 획득
+            is_good_chart, image_path, ai_reason, ai_sl_price = await analyze_chart_pattern(stock_code, stk_nm, condition_id)
             
             if not is_good_chart:
+                if image_path and os.path.exists(image_path): os.remove(image_path)
                 RE_ENTRY_COOLDOWN[stock_code] = datetime.now() + timedelta(minutes=10)
                 return
 
             if current_price <= 0:
                 strategy_logger.warning(f"🚫 [진입불가] {stk_nm}: 현재가 오류 ({current_price})")
+                if image_path and os.path.exists(image_path): os.remove(image_path)
                 return
 
             buy_qty = int((order_amount * 0.95) // current_price)
             if buy_qty == 0:
                 strategy_logger.warning(f"🚫 [진입불가] {stk_nm} ({stock_code}): 주문 가능 수량 0주 (예산 부족 또는 고가 종목)")
+                if image_path and os.path.exists(image_path): os.remove(image_path)
                 return
 
             default_sl_rate = float(BOT_SETTINGS.get('STOP_LOSS_RATE') or -1.5)
@@ -1028,6 +1036,7 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                     strategy_logger.info(f"🤖 [AI전략] {stk_nm}: AI가격 {ai_sl_price}원 -> 정밀계산 손절률 {final_sl_rate}% (예상비용 {total_cost}원 포함)")
                 else:
                     strategy_logger.info(f"🚫 [진입불가] {stk_nm}: AI 손절률({calc_rate:.2f}%)이 안전한계({ai_safety_limit}%)보다 낮아 위험합니다. 진입을 포기합니다.")
+                    if image_path and os.path.exists(image_path): os.remove(image_path)
                     return
 
             BUY_ATTEMPT_HISTORY[stock_code] = datetime.now()
@@ -1039,7 +1048,7 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
             ord_no = await run_blocking(fn_kt10000_buy_order, stock_code, buy_qty, price=0)
 
             if ord_no:
-                await log_trade(stock_code, stk_nm, "BUY", buy_qty, current_price, f"조건검색({condition_id})", image_path=None, ai_reason=ai_reason, custom_sl_rate=final_sl_rate)
+                await log_trade(stock_code, stk_nm, "BUY", buy_qty, current_price, f"조건검색({condition_id})", image_path=image_path, ai_reason=ai_reason, custom_sl_rate=final_sl_rate)
                 TRADING_STATE[stock_code] = {
                     "stk_nm": stk_nm, "buy_price": current_price, "buy_qty": buy_qty,
                     "trailing_active": False, "peak_profit_rate": 0.0,
@@ -1053,6 +1062,7 @@ async def process_single_stock_signal(stock_code, event_type, condition_id, cond
                 strategy_logger.info(f"✅ [주문성공] 주문번호: {ord_no}")
             else:
                 strategy_logger.error(f"❌ [주문실패] {stk_nm}: API 응답 없음")
+                if image_path and os.path.exists(image_path): os.remove(image_path)
 
             await save_status_to_file(force=True)
             
