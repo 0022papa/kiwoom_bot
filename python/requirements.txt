@@ -1,0 +1,9 @@
+requests
+websockets
+python-dotenv
+pandas
+finance-datareader
+exchange_calendars
+mplfinance
+google-genai
+pillow

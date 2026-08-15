@@ -1,0 +1,1488 @@
+<!DOCTYPE html>
+<html lang="ko" class="">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kiwoom Bot Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class', 
+            theme: {
+                extend: {
+                    colors: {
+                        slate: { 50: '#f8fafc', 100: '#f1f5f9', 200: '#e2e8f0', 300: '#cbd5e1', 400: '#94a3b8', 500: '#64748b', 600: '#475569', 700: '#334155', 800: '#1e293b', 900: '#0f172a' }
+                    },
+                    animation: {
+                        'fade-in-down': 'fadeInDown 0.5s ease-out',
+                        'fade-out-up': 'fadeOutUp 0.5s ease-out forwards',
+                        'pulse-fast': 'pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite'
+                    },
+                    keyframes: {
+                        fadeInDown: { '0%': { opacity: '0', transform: 'translate(-50%, -20px)' }, '100%': { opacity: '1', transform: 'translate(-50%, 0)' } },
+                        fadeOutUp: { '0%': { opacity: '1', transform: 'translate(-50%, 0)' }, '100%': { opacity: '0', transform: 'translate(-50%, -20px)' } }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; }
+        ::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        .dark ::-webkit-scrollbar-track { background: #1e293b; }
+        .dark ::-webkit-scrollbar-thumb { background: #475569; }
+        .dark ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        
+        .loader-white { border-top-color: white; animation: spin 1s linear infinite; border-width: 2px; border-style: solid; border-radius: 50%; width: 1rem; height: 1rem; border-right-color: transparent; border-bottom-color: transparent; border-left-color: transparent; display: inline-block; margin-right: 0.5rem; }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+        .toggle-checkbox:checked { right: 0; border-color: #3b82f6; }
+        .toggle-checkbox:checked + .toggle-label { background-color: #3b82f6; }
+        .toggle-checkbox { right: calc(100% - 1.5rem); transition: all 0.3s; top: 0; border-color: #e2e8f0;}
+
+        .log-entry { font-family: 'Menlo', 'Monaco', 'Courier New', monospace; font-size: 0.8rem; border-bottom: 1px solid #333; padding: 2px 0; }
+        .log-INFO { color: #d4d4d4; }
+        .log-WARNING { color: #dcdcaa; }
+        .log-ERROR { color: #f44747; font-weight: bold; }
+        .log-DEBUG { color: #6a9955; }
+
+        .click-edit-input {
+            background-color: transparent;
+            border: 1px solid transparent;
+            border-radius: 0.375rem;
+            transition: all 0.2s;
+            cursor: pointer;
+            text-align: right;
+        }
+        .click-edit-input:hover {
+            background-color: rgba(0, 0, 0, 0.05);
+        }
+        .dark .click-edit-input:hover {
+            background-color: rgba(255, 255, 255, 0.1);
+        }
+        .click-edit-input:focus {
+            background-color: white;
+            border-color: #3b82f6;
+            cursor: text;
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+            text-align: left;
+        }
+        .dark .click-edit-input:focus {
+            background-color: #1e293b;
+            border-color: #3b82f6;
+            color: white;
+        }
+    </style>
+</head>
+<body class="bg-slate-100 dark:bg-slate-900 text-slate-900 dark:text-slate-100 min-h-screen transition-colors duration-200">
+    <div class="container mx-auto p-4 max-w-[1600px] relative">
+        <header class="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
+            <div class="flex items-center gap-3 w-full md:w-auto justify-center md:justify-start">
+                <h1 class="text-2xl md:text-3xl font-bold text-blue-600 dark:text-blue-400">Kiwoom Bot</h1>
+                <span id="mode-badge" class="px-2 py-1 text-xs font-bold rounded bg-gray-200 text-gray-600">Loading...</span>
+            </div>
+            <div class="flex items-center justify-center gap-2 flex-wrap w-full md:w-auto">
+                <a href="/backtest.html" class="px-3 py-2 text-sm bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg transition-colors flex items-center gap-2 whitespace-nowrap">
+                    <span>백테스팅</span>
+                </a>
+                <button id="restart-button" class="px-3 py-2 text-sm bg-orange-500 hover:bg-orange-600 text-white rounded-lg transition-colors flex items-center gap-1 whitespace-nowrap" title="봇 재시작">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                    <span>재시작</span>
+                </button>
+                <button id="theme-toggle" class="p-2 rounded-lg bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors">
+                    <svg id="theme-toggle-dark-icon" class="hidden h-5 w-5" fill="currentColor" viewBox="0 0 20 20"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"></path></svg>
+                    <svg id="theme-toggle-light-icon" class="hidden h-5 w-5" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.121-1.414a1 1 0 010 1.414l-.707.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM10 16a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM3.05 13.657l.707-.707a1 1 0 011.414 1.414l-.707.707a1 1 0 01-1.414-1.414zM2 10a1 1 0 011-1h1a1 1 0 110 2H3a1 1 0 01-1-1zm.293-7.293l.707.707a1 1 0 011.414-1.414l-.707-.707a1 1 0 01-1.414 1.414z"></path></svg>
+                </button>
+                <button id="logout-button" class="px-3 py-2 text-sm bg-red-500 hover:bg-red-600 text-white rounded-lg transition-colors whitespace-nowrap">로그아웃</button>
+            </div>
+        </header>
+
+        <div id="message-box" class="hidden fixed top-10 left-1/2 transform -translate-x-1/2 z-50 min-w-[320px] max-w-md px-6 py-4 rounded-xl shadow-2xl font-bold text-sm md:text-base text-center animate-fade-in-down backdrop-blur-md border transition-all"></div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+            <div class="space-y-6"> 
+                <div class="p-6 bg-white dark:bg-slate-800 rounded-2xl shadow-lg border border-slate-200 dark:border-slate-700 transition-colors">
+                    <h2 class="text-xl font-bold mb-4 flex items-center"><span>기본 & 매수 설정</span></h2>
+                    
+                    <div class="mb-6">
+                        <div id="status-container" class="flex flex-col items-center justify-center p-6 bg-slate-100 dark:bg-slate-700 rounded-xl transition-all duration-300 border-2 border-transparent">
+                            <div id="status-light" class="w-6 h-6 rounded-full bg-gray-400 mb-2 shadow-lg transition-all duration-500"></div>
+                            <span id="status-text" class="font-bold text-2xl tracking-tight transition-all duration-300">OFFLINE</span>
+                            <span id="status-subtext" class="text-xs text-slate-500 dark:text-slate-400 mt-1">연결 대기 중...</span>
+                        </div>
+                    </div>
+                    
+                    <form id="settings-form" class="space-y-3">
+                        
+                        <!-- Group 1: 기본 운용 -->
+                        <div class="space-y-3 pb-4 border-b border-slate-200 dark:border-slate-700">
+                            <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider">기본 운용 설정</h3>
+                            
+                            <!-- 모의투자 -->
+                            <div class="flex items-center justify-between p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700/50 rounded-lg">
+                                <div>
+                                    <label for="MOCK_TRADE" class="text-sm font-bold text-slate-800 dark:text-slate-200 cursor-pointer select-none">모의투자 모드</label>
+                                    <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">해제 시 <span class="text-red-500 font-bold">실전 투자</span></p>
+                                </div>
+                                <div class="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
+                                    <input type="checkbox" name="MOCK_TRADE" id="MOCK_TRADE" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                    <label for="MOCK_TRADE" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                                </div>
+                            </div>
+
+                            <!-- 봇 상태 -->
+                            <div>
+                                <label for="BOT_STATUS" class="block text-sm font-medium mb-1 text-slate-600 dark:text-slate-400">봇 상태 설정</label>
+                                <select id="BOT_STATUS" name="BOT_STATUS" class="w-full p-2.5 border border-slate-300 dark:border-slate-600 rounded-lg bg-slate-50 dark:bg-slate-700 focus:ring-2 focus:ring-blue-500 outline-none transition-colors">
+                                    <option value="RUNNING">RUNNING (매수 실행)</option>
+                                    <option value="STOPPED">STOPPED (매수 중지)</option>
+                                </select>
+                            </div>
+
+                            <!-- 매수금 / 쿨다운 설정 -->
+                            <div class="grid grid-cols-2 gap-3">
+                                <div class="bg-slate-50 dark:bg-slate-700/50 rounded-lg p-2 border border-slate-200 dark:border-slate-600">
+                                    <label class="block text-xs text-slate-500 dark:text-slate-400 mb-1">1회 매수금(원)</label>
+                                    <input type="number" id="ORDER_AMOUNT" name="ORDER_AMOUNT" class="click-edit-input w-full p-1 text-sm font-bold bg-transparent" placeholder="1000000">
+                                </div>
+                                
+                                <div class="bg-slate-50 dark:bg-slate-700/50 rounded-lg p-2 border border-slate-200 dark:border-slate-600">
+                                    <div class="flex items-center justify-between mb-1">
+                                        <label for="USE_RE_ENTRY_COOLDOWN" class="text-xs font-medium text-slate-500 dark:text-slate-400 cursor-pointer">매도후 쿨다운</label>
+                                        <div class="relative inline-block w-8 align-middle select-none transition duration-200 ease-in scale-75 origin-right">
+                                            <input type="checkbox" name="USE_RE_ENTRY_COOLDOWN" id="USE_RE_ENTRY_COOLDOWN" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                            <label for="USE_RE_ENTRY_COOLDOWN" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                                        </div>
+                                    </div>
+                                    <div class="flex items-center gap-1">
+                                        <input type="number" id="RE_ENTRY_COOLDOWN_MIN" name="RE_ENTRY_COOLDOWN_MIN" class="click-edit-input w-full p-1 text-sm font-bold bg-transparent" placeholder="10">
+                                        <span class="text-xs text-slate-400">분</span>
+                                    </div>
+                                </div>
+
+                                <div class="bg-slate-50 dark:bg-slate-700/50 rounded-lg p-2 border border-slate-200 dark:border-slate-600">
+                                    <div class="flex items-center justify-between mb-1">
+                                        <label for="USE_AI_REJECTION_COOLDOWN" class="text-xs font-medium text-slate-500 dark:text-slate-400 cursor-pointer">AI 거절 쿨다운</label>
+                                        <div class="relative inline-block w-8 align-middle select-none transition duration-200 ease-in scale-75 origin-right">
+                                            <input type="checkbox" name="USE_AI_REJECTION_COOLDOWN" id="USE_AI_REJECTION_COOLDOWN" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                            <label for="USE_AI_REJECTION_COOLDOWN" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                                        </div>
+                                    </div>
+                                    <div class="flex items-center gap-1">
+                                        <input type="number" id="AI_REJECTION_COOLDOWN_MIN" name="AI_REJECTION_COOLDOWN_MIN" class="click-edit-input w-full p-1 text-sm font-bold bg-transparent" placeholder="10">
+                                        <span class="text-xs text-slate-400">분</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 매수 중지 시간 (Break Time) -->
+                            <div class="p-3 bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600 mt-2">
+                                <div class="flex items-center justify-between mb-2">
+                                    <label for="USE_BREAK_TIME" class="text-xs font-bold text-slate-700 dark:text-slate-200 cursor-pointer select-none">☕ 매수 중지 시간 (점심 등)</label>
+                                    <div class="relative inline-block w-10 align-middle select-none transition duration-200 ease-in scale-90">
+                                        <input type="checkbox" name="USE_BREAK_TIME" id="USE_BREAK_TIME" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                        <label for="USE_BREAK_TIME" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                                    </div>
+                                </div>
+                                <div class="grid grid-cols-2 gap-2">
+                                    <div>
+                                        <label class="block text-[10px] text-slate-500 dark:text-slate-400 mb-0.5">시작</label>
+                                        <input type="time" id="BREAK_START" name="BREAK_START" class="w-full p-1 text-xs border border-slate-300 dark:border-slate-600 rounded bg-white dark:bg-slate-800 focus:ring-1 focus:ring-blue-500 outline-none text-center font-bold">
+                                    </div>
+                                    <div>
+                                        <label class="block text-[10px] text-slate-500 dark:text-slate-400 mb-0.5">종료</label>
+                                        <input type="time" id="BREAK_END" name="BREAK_END" class="w-full p-1 text-xs border border-slate-300 dark:border-slate-600 rounded bg-white dark:bg-slate-800 focus:ring-1 focus:ring-blue-500 outline-none text-center font-bold">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Group 2: 매수 필터 -->
+                        <div class="space-y-3 pb-4 border-b border-slate-200 dark:border-slate-700">
+                            <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider">매수 필터링</h3>
+
+                            <!-- 지수 필터 -->
+                            <div class="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-700 rounded-lg border border-slate-200 dark:border-slate-600">
+                                <div>
+                                    <label for="USE_MARKET_FILTER" class="text-sm font-bold text-slate-700 dark:text-slate-200 cursor-pointer select-none">📉 지수 필터 (당일 양봉)</label>
+                                    <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">지수 하락세(음봉) 시 매수 금지</p>
+                                </div>
+                                <div class="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
+                                    <input type="checkbox" name="USE_MARKET_FILTER" id="USE_MARKET_FILTER" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                    <label for="USE_MARKET_FILTER" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                                </div>
+                            </div>
+
+                            <!-- 테마 필터 -->
+                            <div class="flex flex-col gap-2 p-3 bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600 mt-2">
+                                <div class="flex items-center justify-between mb-1">
+                                    <label for="USE_THEME_FILTER" class="text-sm font-bold text-slate-700 dark:text-slate-200 cursor-pointer select-none">🔥 주도 테마 필터</label>
+                                    <div class="relative inline-block w-10 mr-2 align-middle select-none transition duration-200 ease-in scale-90">
+                                        <input type="checkbox" name="USE_THEME_FILTER" id="USE_THEME_FILTER" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                        <label for="USE_THEME_FILTER" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                                    </div>
+                                </div>
+                                <div class="flex items-center justify-between gap-2 border-t border-slate-200 dark:border-slate-600 pt-2">
+                                    <span class="text-xs text-slate-500 dark:text-slate-400">기준 상위 순위(N):</span>
+                                    <input type="number" step="1" min="1" max="10" id="THEME_TOP_N" name="THEME_TOP_N" class="click-edit-input w-24 p-1 text-sm font-bold bg-transparent text-right" placeholder="3">
+                                </div>
+                            </div>
+
+                            <!-- 호가 필터 -->
+                            <div class="p-3 bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600 space-y-3">
+                                <div>
+                                    <div class="flex items-center justify-between mb-1">
+                                        <label for="USE_HOGA_FILTER" class="text-sm font-bold text-slate-700 dark:text-slate-200 cursor-pointer select-none">호가 비율 필터 (최소)</label>
+                                        <div class="relative inline-block w-10 align-middle select-none transition duration-200 ease-in scale-90">
+                                            <input type="checkbox" name="USE_HOGA_FILTER" id="USE_HOGA_FILTER" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                            <label for="USE_HOGA_FILTER" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                                        </div>
+                                    </div>
+                                    <input type="number" step="0.1" min="0" id="MIN_BUY_SELL_RATIO" name="MIN_BUY_SELL_RATIO" class="click-edit-input w-full p-1 text-sm font-bold bg-transparent" placeholder="0.5">
+                                    <p class="text-[10px] text-slate-500">매수잔량 / 매도잔량 비율 (0.5 이상 권장)</p>
+                                </div>
+                                
+                                <div class="pt-2 border-t border-slate-200 dark:border-slate-600">
+                                    <div class="flex items-center justify-between mb-1">
+                                        <label for="USE_FAKE_BUY_FILTER" class="text-sm font-bold text-slate-700 dark:text-slate-200 cursor-pointer select-none">허매수 필터 (최대)</label>
+                                        <div class="relative inline-block w-10 align-middle select-none transition duration-200 ease-in scale-90">
+                                            <input type="checkbox" name="USE_FAKE_BUY_FILTER" id="USE_FAKE_BUY_FILTER" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                            <label for="USE_FAKE_BUY_FILTER" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                                        </div>
+                                    </div>
+                                    <input type="number" step="0.1" min="0" id="MAX_BUY_SELL_RATIO" name="MAX_BUY_SELL_RATIO" class="click-edit-input w-full p-1 text-sm font-bold bg-transparent" placeholder="10.0">
+                                    <p class="text-[10px] text-slate-500">비율이 너무 높으면(예: 10.0) 허매수 의심</p>
+                                </div>
+                            </div>
+
+                            <!-- 거래량 급감 필터 -->
+                            <div class="bg-cyan-50 dark:bg-cyan-900/10 rounded-lg p-2 border border-cyan-100 dark:border-cyan-900/30">
+                                 <div class="flex items-center justify-between mb-1">
+                                     <label for="USE_VOLUME_FILTER" class="text-xs font-medium text-cyan-600 dark:text-cyan-400 cursor-pointer">거래량 급감 필터</label>
+                                     <div class="relative inline-block w-10 align-middle select-none transition duration-200 ease-in scale-75 origin-right">
+                                         <input type="checkbox" name="USE_VOLUME_FILTER" id="USE_VOLUME_FILTER" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                         <label for="USE_VOLUME_FILTER" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                                     </div>
+                                 </div>
+                                 <div class="flex items-center gap-2">
+                                     <span class="text-[10px] text-cyan-500">평균대비 비율:</span>
+                                     <input type="number" step="0.1" id="VOLUME_FILTER_RATIO" name="VOLUME_FILTER_RATIO" class="click-edit-input flex-1 p-1 text-sm font-bold text-cyan-700 dark:text-cyan-300 bg-transparent" placeholder="0.3">
+                                 </div>
+                            </div>
+
+                            <div class="grid grid-cols-2 gap-3">
+                                <!-- RSI 필터 -->
+                                <div class="bg-indigo-50 dark:bg-indigo-900/10 rounded-lg p-2 border border-indigo-100 dark:border-indigo-900/30">
+                                     <div class="flex items-center justify-between mb-1">
+                                         <label for="USE_RSI_FILTER" class="text-xs font-medium text-indigo-600 dark:text-indigo-400 cursor-pointer">RSI 제한</label>
+                                         <div class="relative inline-block w-10 align-middle select-none transition duration-200 ease-in scale-75 origin-right">
+                                             <input type="checkbox" name="USE_RSI_FILTER" id="USE_RSI_FILTER" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                             <label for="USE_RSI_FILTER" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                                         </div>
+                                     </div>
+                                     <input type="number" id="RSI_LIMIT" name="RSI_LIMIT" class="click-edit-input w-full p-1 text-sm font-bold text-indigo-700 dark:text-indigo-300 bg-transparent" placeholder="70">
+                                </div>
+                                <!-- 윗꼬리 필터 -->
+                                <div class="bg-slate-50 dark:bg-slate-700/50 rounded-lg p-2 border border-slate-200 dark:border-slate-600">
+                                     <div class="flex items-center justify-between mb-1">
+                                         <span class="text-xs font-medium text-slate-500 dark:text-slate-400">윗꼬리 제한</span>
+                                     </div>
+                                     <div class="flex gap-2">
+                                         <div class="flex-1 flex flex-col gap-1">
+                                             <div class="flex justify-between items-center">
+                                                 <label for="USE_UPPER_SHADOW_FILTER" class="text-[10px] text-slate-400 cursor-pointer">분봉</label>
+                                                 <div class="relative inline-block w-8 align-middle select-none transition duration-200 ease-in scale-75 origin-right">
+                                                     <input type="checkbox" name="USE_UPPER_SHADOW_FILTER" id="USE_UPPER_SHADOW_FILTER" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                                     <label for="USE_UPPER_SHADOW_FILTER" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                                                 </div>
+                                             </div>
+                                             <input type="number" step="0.01" id="UPPER_SHADOW_LIMIT" name="UPPER_SHADOW_LIMIT" class="click-edit-input w-full p-1 text-sm font-bold bg-transparent" placeholder="0.4">
+                                         </div>
+                                         <div class="flex-1 flex flex-col gap-1">
+                                             <div class="flex justify-between items-center">
+                                                 <label for="USE_DAILY_SHADOW_FILTER" class="text-[10px] text-slate-400 cursor-pointer">일봉</label>
+                                                 <div class="relative inline-block w-8 align-middle select-none transition duration-200 ease-in scale-75 origin-right">
+                                                     <input type="checkbox" name="USE_DAILY_SHADOW_FILTER" id="USE_DAILY_SHADOW_FILTER" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                                     <label for="USE_DAILY_SHADOW_FILTER" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                                                 </div>
+                                             </div>
+                                             <input type="number" step="0.01" id="DAILY_SHADOW_LIMIT" name="DAILY_SHADOW_LIMIT" class="click-edit-input w-full p-1 text-sm font-bold bg-transparent" placeholder="0.5">
+                                         </div>
+                                     </div>
+                                </div>
+                            </div>
+
+                            <!-- 오버나잇 조건식 -->
+                            <div class="p-3 bg-purple-50 dark:bg-purple-900/20 rounded-lg border border-purple-200 dark:border-purple-700/50">
+                                <label for="OVERNIGHT_COND_IDS" class="block text-sm font-bold text-purple-800 dark:text-purple-200 mb-1">오버나잇 조건식</label>
+                                <input type="text" id="OVERNIGHT_COND_IDS" name="OVERNIGHT_COND_IDS" placeholder="예: 2, 5" class="click-edit-input w-full p-2 text-sm font-bold bg-transparent text-purple-700 dark:text-purple-300">
+                            </div>
+                        </div>
+                        
+                        <button type="submit" class="w-full p-3 mt-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg shadow-md transition-all active:scale-95">설정 저장</button>
+                    </form>
+                </div>
+            </div> 
+
+            <div class="space-y-6">
+                <div class="p-6 bg-white dark:bg-slate-800 rounded-2xl shadow-lg border border-slate-200 dark:border-slate-700 transition-colors">
+                    <h2 class="text-xl font-bold mb-4">매도 & 시스템 설정</h2>
+                    <div class="space-y-3">
+                        <!-- Group 3: 매도 및 리스크 관리 -->
+                        <div class="space-y-3 pb-4 border-b border-slate-200 dark:border-slate-700">
+                            <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider">매도 및 리스크 관리</h3>
+
+                            <div class="grid grid-cols-2 gap-3">
+                                <!-- 매도 감시 -->
+                                <div class="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-700 rounded-lg border border-slate-200 dark:border-slate-600">
+                                    <div><label for="USE_AUTO_SELL" class="text-xs font-bold text-slate-700 dark:text-slate-200 cursor-pointer select-none">매도 감시</label></div>
+                                    <div class="relative inline-block w-10 align-middle select-none transition duration-200 ease-in scale-90">
+                                        <input type="checkbox" name="USE_AUTO_SELL" id="USE_AUTO_SELL" form="settings-form" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                        <label for="USE_AUTO_SELL" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                                    </div>
+                                </div>
+                                <!-- 장시간 준수 -->
+                                <div class="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-700 rounded-lg border border-slate-200 dark:border-slate-600">
+                                    <div><label for="USE_MARKET_TIME" class="text-xs font-bold text-slate-700 dark:text-slate-200 cursor-pointer select-none">장시간 준수</label></div>
+                                    <div class="relative inline-block w-10 align-middle select-none transition duration-200 ease-in scale-90">
+                                        <input type="checkbox" name="USE_MARKET_TIME" id="USE_MARKET_TIME" form="settings-form" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                        <label for="USE_MARKET_TIME" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 목표가 분할 매도 -->
+                            <div class="bg-green-50 dark:bg-green-900/20 rounded-lg p-3 border border-green-200 dark:border-green-700/50">
+                                <div class="flex items-center justify-between mb-1">
+                                    <label for="USE_PARTIAL_PROFIT" class="text-sm font-bold text-green-700 dark:text-green-200 cursor-pointer select-none">목표가 분할 매도</label>
+                                    <div class="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
+                                        <input type="checkbox" name="USE_PARTIAL_PROFIT" id="USE_PARTIAL_PROFIT" form="settings-form" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                        <label for="USE_PARTIAL_PROFIT" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                                    </div>
+                                </div>
+                                <div class="flex items-center gap-2 mt-2">
+                                     <span class="text-xs text-green-600 dark:text-green-300">매도 비율(%):</span>
+                                     <input type="number" id="PARTIAL_PROFIT_RATE" name="PARTIAL_PROFIT_RATE" form="settings-form" class="click-edit-input flex-1 p-1 text-sm font-bold text-green-700 dark:text-green-300 bg-transparent" placeholder="50">
+                                </div>
+                            </div>
+
+                            <!-- 타임컷 -->
+                            <div class="bg-pink-50 dark:bg-pink-900/10 rounded-lg p-3 border border-pink-100 dark:border-pink-900/30">
+                                 <div class="flex items-center justify-between mb-1">
+                                     <label for="USE_TIME_CUT" class="text-sm font-bold text-pink-600 dark:text-pink-400 cursor-pointer">타임컷 (시간 경과 매도)</label>
+                                     <div class="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
+                                         <input type="checkbox" name="USE_TIME_CUT" id="USE_TIME_CUT" form="settings-form" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                         <label for="USE_TIME_CUT" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                                     </div>
+                                 </div>
+                                 <div class="flex items-center gap-2 mt-2">
+                                     <span class="text-xs text-pink-500">경과 시간(분):</span>
+                                     <input type="number" id="TIME_CUT_MINUTES" name="TIME_CUT_MINUTES" form="settings-form" class="click-edit-input flex-1 p-1 text-sm font-bold text-pink-700 dark:text-pink-300 bg-transparent" placeholder="20">
+                                 </div>
+                            </div>
+
+                            <!-- 물타기 전략 (신규) -->
+                            <div class="bg-blue-50 dark:bg-blue-900/10 rounded-lg p-3 border border-blue-100 dark:border-blue-900/30">
+                                <div class="flex items-center justify-between mb-2">
+                                     <label for="USE_WATERING" class="text-sm font-bold text-blue-600 dark:text-blue-400 cursor-pointer">💧 AI 물타기 (손절 방어)</label>
+                                     <div class="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
+                                         <input type="checkbox" name="USE_WATERING" id="USE_WATERING" form="settings-form" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                         <label for="USE_WATERING" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                                     </div>
+                                 </div>
+                                 <div id="watering-options" class="grid grid-cols-2 gap-3 mt-2">
+                                    <div>
+                                        <label class="block text-xs font-medium mb-1 text-blue-500">최대 횟수(회)</label>
+                                        <input type="number" id="MAX_WATERING_COUNT" name="MAX_WATERING_COUNT" form="settings-form" class="click-edit-input w-full p-1 text-sm font-bold text-blue-700 dark:text-blue-300 bg-transparent" placeholder="1">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-medium mb-1 text-blue-500">최대 금액(원)</label>
+                                        <input type="number" id="MAX_WATERING_AMOUNT" name="MAX_WATERING_AMOUNT" form="settings-form" class="click-edit-input w-full p-1 text-sm font-bold text-blue-700 dark:text-blue-300 bg-transparent" placeholder="2000000">
+                                    </div>
+                                 </div>
+                                 <p class="text-[10px] text-blue-400 mt-1">* 손절가 도달 시 AI가 반등 가능성을 판단하여 추가 매수</p>
+                            </div>
+
+                            <!-- 손절 설정 (통합) -->
+                            <div class="bg-red-50 dark:bg-red-900/10 rounded-lg p-3 border border-red-100 dark:border-red-900/30 transition-all">
+                                 <div class="flex items-center justify-between mb-1">
+                                     <label for="USE_STOP_LOSS" class="text-sm font-bold text-red-600 dark:text-red-400 cursor-pointer">손절매 설정 (Stop Loss)</label>
+                                     <div class="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
+                                         <input type="checkbox" name="USE_STOP_LOSS" id="USE_STOP_LOSS" form="settings-form" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                         <label for="USE_STOP_LOSS" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                                     </div>
+                                 </div>
+                                 
+                                 <div id="stop-loss-options" class="space-y-3 mt-3 pt-2 border-t border-red-200 dark:border-red-800/30">
+                                     <!-- 기본 손절 -->
+                                     <div class="flex items-center justify-between">
+                                         <span class="text-xs font-bold text-red-500">기본 손절률(%)</span>
+                                         <input type="number" step="0.1" id="STOP_LOSS_RATE" name="STOP_LOSS_RATE" form="settings-form" class="click-edit-input w-24 p-1 text-sm font-bold text-red-600 bg-transparent text-right" placeholder="-2.0">
+                                     </div>
+
+                                     <!-- AI 손절 -->
+                                     <div class="bg-white dark:bg-slate-800/50 rounded p-2 border border-red-100 dark:border-red-900/20">
+                                         <div class="flex items-center justify-between">
+                                             <label for="USE_AI_STOP_LOSS" class="text-xs font-bold text-indigo-600 dark:text-indigo-400 cursor-pointer flex items-center gap-1">
+                                                 🤖 AI 손절가 사용
+                                             </label>
+                                             <input type="checkbox" id="USE_AI_STOP_LOSS" name="USE_AI_STOP_LOSS" form="settings-form" class="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500 border-gray-300 cursor-pointer">
+                                         </div>
+                                         
+                                         <div id="ai-safety-box" class="hidden mt-2 pt-2 border-t border-dashed border-indigo-200 dark:border-indigo-800/50">
+                                             <div class="flex justify-between items-center">
+                                                 <label for="AI_STOP_LOSS_SAFETY_LIMIT" class="text-[11px] text-indigo-500 dark:text-indigo-300">
+                                                     안전장치 한계 (%)
+                                                 </label>
+                                                 <input type="number" step="0.1" id="AI_STOP_LOSS_SAFETY_LIMIT" name="AI_STOP_LOSS_SAFETY_LIMIT" form="settings-form" class="click-edit-input w-20 p-0.5 text-xs font-bold text-indigo-600 dark:text-indigo-300 text-right" placeholder="-5.0">
+                                             </div>
+                                             <p class="text-[10px] text-indigo-400/70 mt-1 text-right">
+                                                 * AI 값이 이보다 낮으면 무시
+                                             </p>
+                                         </div>
+                                     </div>
+                                 </div>
+                            </div>
+
+                            <!-- 트레일링 스탑 -->
+                            <div class="bg-orange-50 dark:bg-orange-900/10 rounded-lg p-3 border border-orange-100 dark:border-orange-900/30">
+                                <div class="flex items-center justify-between mb-2">
+                                     <label for="USE_TRAILING_STOP" class="text-sm font-bold text-orange-600 dark:text-orange-400 cursor-pointer">트레일링 스탑 (익절)</label>
+                                     <div class="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
+                                         <input type="checkbox" name="USE_TRAILING_STOP" id="USE_TRAILING_STOP" form="settings-form" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                         <label for="USE_TRAILING_STOP" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                                     </div>
+                                 </div>
+                                 <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="block text-xs font-medium mb-1 text-orange-500">시작(%)</label>
+                                        <input type="number" step="0.1" id="TRAILING_START_RATE" name="TRAILING_START_RATE" form="settings-form" class="click-edit-input w-full p-1 text-sm font-bold text-green-600 bg-transparent" placeholder="4.0">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-medium mb-1 text-orange-500">감시폭(%)</label>
+                                        <input type="number" step="0.1" id="TRAILING_STOP_RATE" name="TRAILING_STOP_RATE" form="settings-form" class="click-edit-input w-full p-1 text-sm font-bold text-orange-600 bg-transparent" placeholder="1.5">
+                                    </div>
+                                 </div>
+                                 
+                                 <!-- 동적 트레일링 스탑 설정 -->
+                                 <div class="mt-2 pt-2 border-t border-orange-200 dark:border-orange-800/30">
+                                    <div class="flex items-center justify-between mb-2">
+                                        <label for="USE_DYNAMIC_TS" class="text-xs font-bold text-orange-600 dark:text-orange-400 cursor-pointer flex items-center gap-1">
+                                            🌊 동적 감시폭 (수익별 차등)
+                                        </label>
+                                        <input type="checkbox" id="USE_DYNAMIC_TS" name="USE_DYNAMIC_TS" form="settings-form" class="w-4 h-4 text-orange-600 rounded focus:ring-orange-500 border-gray-300 cursor-pointer">
+                                    </div>
+                                    <div id="dynamic-ts-options" class="hidden space-y-1.5 text-xs bg-white dark:bg-slate-800/50 p-2 rounded border border-orange-100 dark:border-orange-900/20">
+                                        <div class="grid grid-cols-2 gap-2 text-[10px] text-orange-400 font-bold text-center">
+                                            <span>수익률(%) 이상</span><span>하락폭(Gap)</span>
+                                        </div>
+                                        <div class="grid grid-cols-2 gap-2 items-center"><input type="number" step="0.1" id="DYN_TS_LV1_TRIGGER" name="DYN_TS_LV1_TRIGGER" form="settings-form" class="click-edit-input w-full p-0.5 text-right" placeholder="5.0"><input type="number" step="0.1" id="DYN_TS_LV1_DROP" name="DYN_TS_LV1_DROP" form="settings-form" class="click-edit-input w-full p-0.5 text-right text-red-500" placeholder="-2.0"></div>
+                                        <div class="grid grid-cols-2 gap-2 items-center"><input type="number" step="0.1" id="DYN_TS_LV2_TRIGGER" name="DYN_TS_LV2_TRIGGER" form="settings-form" class="click-edit-input w-full p-0.5 text-right" placeholder="10.0"><input type="number" step="0.1" id="DYN_TS_LV2_DROP" name="DYN_TS_LV2_DROP" form="settings-form" class="click-edit-input w-full p-0.5 text-right text-red-500" placeholder="-3.0"></div>
+                                        <div class="grid grid-cols-2 gap-2 items-center"><input type="number" step="0.1" id="DYN_TS_LV3_TRIGGER" name="DYN_TS_LV3_TRIGGER" form="settings-form" class="click-edit-input w-full p-0.5 text-right" placeholder="20.0"><input type="number" step="0.1" id="DYN_TS_LV3_DROP" name="DYN_TS_LV3_DROP" form="settings-form" class="click-edit-input w-full p-0.5 text-right text-red-500" placeholder="-5.0"></div>
+                                    </div>
+                                 </div>
+                            </div>
+                        </div>
+
+                        <!-- Group 4: 시스템 및 스케줄 -->
+                        <div class="space-y-3">
+                            <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider">시스템 및 스케줄</h3>
+
+                            <!-- 스케줄러 -->
+                            <div class="border border-blue-200 dark:border-blue-800 rounded-lg p-3 bg-blue-50 dark:bg-blue-900/20 transition-all">
+                                <div class="flex items-center justify-between mb-2">
+                                    <div>
+                                        <label for="USE_SCHEDULER" class="text-sm font-bold text-blue-800 dark:text-blue-200 cursor-pointer select-none">⏰ 스케줄링</label>
+                                    </div>
+                                    <div class="relative inline-block w-10 mr-2 align-middle select-none transition duration-200 ease-in">
+                                        <input type="checkbox" name="USE_SCHEDULER" id="USE_SCHEDULER" form="settings-form" class="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                        <label for="USE_SCHEDULER" class="toggle-label block overflow-hidden h-5 rounded-full bg-gray-300 cursor-pointer"></label>
+                                    </div>
+                                </div>
+                                <div id="scheduler-options" class="grid grid-cols-2 gap-3 text-sm hidden mt-3 border-t border-blue-200 dark:border-blue-700 pt-3">
+                                    <div class="col-span-1"><label class="block text-xs text-slate-500 mb-1">오전 시작</label><input type="time" id="MORNING_START" name="MORNING_START" form="settings-form" class="w-full p-1.5 border rounded text-xs bg-white dark:bg-slate-800 dark:border-slate-600 dark:text-white"></div>
+                                    <div class="col-span-1"><label class="block text-xs text-slate-500 mb-1">오전 조건식</label><select id="MORNING_COND" name="MORNING_COND" form="settings-form" class="w-full p-1.5 border rounded text-xs bg-white dark:bg-slate-800 dark:border-slate-600 dark:text-white"></select></div>
+                                    
+                                    <div class="col-span-1"><label class="block text-xs text-slate-500 mb-1">점심 시작</label><input type="time" id="LUNCH_START" name="LUNCH_START" form="settings-form" class="w-full p-1.5 border rounded text-xs bg-white dark:bg-slate-800 dark:border-slate-600 dark:text-white"></div>
+                                    <div class="col-span-1"><label class="block text-xs text-slate-500 mb-1">점심 조건식</label><select id="LUNCH_COND" name="LUNCH_COND" form="settings-form" class="w-full p-1.5 border rounded text-xs bg-white dark:bg-slate-800 dark:border-slate-600 dark:text-white"></select></div>
+
+                                    <div class="col-span-1"><label class="block text-xs text-slate-500 mb-1">오후 시작</label><input type="time" id="AFTERNOON_START" name="AFTERNOON_START" form="settings-form" class="w-full p-1.5 border rounded text-xs bg-white dark:bg-slate-800 dark:border-slate-600 dark:text-white"></div>
+                                    <div class="col-span-1"><label class="block text-xs text-slate-500 mb-1">오후 조건식</label><select id="AFTERNOON_COND" name="AFTERNOON_COND" form="settings-form" class="w-full p-1.5 border rounded text-xs bg-white dark:bg-slate-800 dark:border-slate-600 dark:text-white"></select></div>
+                                </div>
+                                <div id="manual-condition-box" class="mt-3 border-t border-blue-200 dark:border-blue-700 pt-3">
+                                    <label for="CONDITION_ID" class="block text-sm font-medium mb-1 text-slate-600 dark:text-slate-400">현재 조건검색식 (수동)</label>
+                                    <select id="CONDITION_ID" name="CONDITION_ID" form="settings-form" class="w-full p-2.5 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 focus:ring-2 focus:ring-blue-500 outline-none transition-colors"><option value="">로딩 중...</option></select>
+                                </div>
+                            </div>
+
+                            <!-- 텔레그램 -->
+                            <div class="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-700 rounded-lg border border-slate-200 dark:border-slate-600">
+                                <div><label for="USE_TELEGRAM" class="text-sm font-bold text-slate-700 dark:text-slate-200 cursor-pointer select-none">텔레그램 알림</label></div>
+                                <div class="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
+                                    <input type="checkbox" name="USE_TELEGRAM" id="USE_TELEGRAM" form="settings-form" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                    <label for="USE_TELEGRAM" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                                </div>
+                            </div>
+                            
+                            <!-- 디버그 -->
+                            <div class="flex items-center justify-between p-3 bg-gray-100 dark:bg-slate-900/50 rounded-lg border border-gray-300 dark:border-slate-600">
+                                <div><label for="DEBUG_MODE" class="text-sm font-bold text-slate-700 dark:text-slate-200 cursor-pointer select-none">🕵️ 디버그 모드</label></div>
+                                <div class="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
+                                    <input type="checkbox" name="DEBUG_MODE" id="DEBUG_MODE" form="settings-form" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                    <label for="DEBUG_MODE" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 편의를 위해 여기에도 저장 버튼 추가 -->
+                        <button type="button" onclick="document.getElementById('settings-form').requestSubmit()" class="w-full p-3 mt-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg shadow-md transition-all active:scale-95">설정 저장</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="space-y-6">
+                <div class="p-6 bg-white dark:bg-slate-800 rounded-2xl shadow-lg border border-slate-200 dark:border-slate-700 transition-colors">
+                    <h2 class="text-xl font-bold mb-4">설정 요약</h2>
+                    <div class="space-y-2 text-xs">
+                        <div class="flex justify-between items-center p-1.5 rounded bg-slate-50 dark:bg-slate-700/50 border-l-4 border-slate-300 dark:border-slate-500">
+                            <span class="text-slate-600 dark:text-slate-300 whitespace-nowrap">운용 모드 / 상태</span>
+                            <div class="flex items-center gap-2"><span id="display_MOCK_TRADE" class="font-bold">...</span><span class="text-slate-300">|</span><span id="display_BOT_STATUS" class="font-bold">...</span></div>
+                        </div>
+                        <div id="summary_row_MARKET_FILTER" class="flex justify-between items-center p-1.5 rounded bg-slate-50 dark:bg-slate-700/50 border-l-4 border-slate-300 dark:border-slate-500">
+                            <span class="text-slate-600 dark:text-slate-300 whitespace-nowrap">지수 필터</span><span id="display_USE_MARKET_FILTER" class="font-bold text-right">...</span>
+                        </div>
+                        <div id="summary_row_THEME_FILTER" class="flex justify-between items-center p-1.5 rounded bg-slate-50 dark:bg-slate-700/50 border-l-4 border-slate-300 dark:border-slate-500">
+                            <span class="text-slate-600 dark:text-slate-300 whitespace-nowrap">테마 필터</span><span id="display_USE_THEME_FILTER" class="font-bold text-right">...</span>
+                        </div>
+                        <div id="summary_row_LEADING_THEMES" class="hidden flex flex-col p-1.5 rounded bg-red-50 dark:bg-red-900/10 border-l-4 border-red-400 dark:border-red-600">
+                            <div class="text-[10px] text-red-500 dark:text-red-400 font-bold mb-0.5">🔥 현재 시장 주도 테마</div>
+                            <div id="display_LEADING_THEMES" class="text-xs font-medium text-slate-700 dark:text-slate-300 break-words leading-tight">수집 대기 중...</div>
+                        </div>
+                        <div id="summary_row_TIME_AUTOSELL" class="flex justify-between items-center p-1.5 rounded bg-slate-50 dark:bg-slate-700/50 border-l-4 border-slate-300 dark:border-slate-500">
+                            <span class="text-slate-600 dark:text-slate-300 whitespace-nowrap">시간준수 / 매도감시</span>
+                            <div class="flex items-center gap-2"><span id="display_USE_MARKET_TIME" class="font-bold">...</span><span class="text-slate-300">|</span><span id="display_USE_AUTO_SELL" class="font-bold">...</span></div>
+                        </div>
+                        <div id="summary_row_BREAK_TIME" class="flex justify-between items-center p-1.5 rounded bg-slate-50 dark:bg-slate-700/50 border-l-4 border-slate-300 dark:border-slate-500">
+                            <span class="text-slate-600 dark:text-slate-300 whitespace-nowrap">휴식 시간</span><span id="display_USE_BREAK_TIME" class="font-bold text-right">...</span>
+                        </div>
+                        <div id="summary_row_PARTIAL_PROFIT" class="flex justify-between items-center p-1.5 rounded bg-slate-50 dark:bg-slate-700/50 border-l-4 border-slate-300 dark:border-slate-500">
+                            <span class="text-slate-600 dark:text-slate-300 whitespace-nowrap">목표가 분할매도</span><span id="display_USE_PARTIAL_PROFIT" class="font-bold text-right">...</span>
+                        </div>
+                        <div id="summary_row_WATERING" class="flex justify-between items-center p-1.5 rounded bg-slate-50 dark:bg-slate-700/50 border-l-4 border-slate-300 dark:border-slate-500">
+                            <span class="text-slate-600 dark:text-slate-300 whitespace-nowrap">AI 물타기</span><span id="display_USE_WATERING" class="font-bold text-right">...</span>
+                        </div>
+                        <div id="summary_row_AI_STOP_LOSS" class="flex justify-between items-center p-1.5 rounded bg-slate-50 dark:bg-slate-700/50">
+                            <span class="text-slate-600 dark:text-slate-300 whitespace-nowrap">AI 손절가 사용</span><span id="display_USE_AI_STOP_LOSS" class="font-bold text-right">...</span>
+                        </div>
+                        <div id="summary_row_TELEGRAM_DEBUG" class="flex justify-between items-center p-1.5 rounded bg-slate-50 dark:bg-slate-700/50">
+                            <span class="text-slate-600 dark:text-slate-300 whitespace-nowrap">알림 / 디버그</span>
+                            <div class="flex items-center gap-2"><span id="display_USE_TELEGRAM" class="font-bold">...</span><span class="text-slate-300">|</span><span id="display_DEBUG_MODE" class="font-bold">...</span></div>
+                        </div>
+                        <div id="summary_row_SCHEDULER" class="flex justify-between items-center p-1.5 rounded bg-slate-50 dark:bg-slate-700/50">
+                            <span class="text-slate-600 dark:text-slate-300 whitespace-nowrap">자동 스케줄</span><span id="display_USE_SCHEDULER" class="font-bold text-right">...</span>
+                        </div>
+                        <div class="flex justify-between items-center p-1.5 rounded bg-slate-50 dark:bg-slate-700/50">
+                            <span class="text-slate-600 dark:text-slate-300 whitespace-nowrap">현재 조건검색식</span><span id="display_CONDITION_NAME" class="font-bold text-blue-600 dark:text-blue-400 truncate max-w-[120px] text-right">...</span>
+                        </div>
+                        <div class="flex justify-between items-center p-1.5 rounded bg-slate-50 dark:bg-slate-700/50">
+                            <span class="text-slate-600 dark:text-slate-300 whitespace-nowrap">1회 매수</span><span id="display_ORDER_AMOUNT" class="font-bold text-slate-900 dark:text-slate-100 text-right">...</span>
+                        </div>
+                        <div class="flex justify-between items-center p-1.5 rounded bg-slate-50 dark:bg-slate-700/50">
+                            <span class="text-slate-600 dark:text-slate-300 whitespace-nowrap">재진입 쿨타임</span><span id="display_COOLDOWN_INFO" class="font-bold text-slate-900 dark:text-slate-100 text-[10px] text-right">...</span>
+                        </div>
+                        <div id="summary_row_HOGA" class="flex justify-between items-center p-1.5 rounded bg-slate-50 dark:bg-slate-700/50">
+                            <span class="text-slate-600 dark:text-slate-300 whitespace-nowrap">호가 비율 필터</span><span id="display_MIN_BUY_SELL_RATIO" class="font-bold text-slate-900 dark:text-slate-100 text-right">...</span>
+                        </div>
+                        <div id="summary_row_VOLUME" class="flex justify-between items-center p-1.5 rounded bg-slate-50 dark:bg-slate-700/50">
+                            <span class="text-slate-600 dark:text-slate-300 whitespace-nowrap">거래량 필터</span><span id="display_VOLUME_FILTER" class="font-bold text-cyan-600 dark:text-cyan-400 text-right">...</span>
+                        </div>
+                        <div id="summary_row_RSI_TIME" class="flex justify-between items-center p-1.5 rounded bg-slate-50 dark:bg-slate-700/50">
+                            <span class="text-slate-600 dark:text-slate-300 whitespace-nowrap">RSI제한 / 타임컷</span>
+                            <div class="space-x-1">
+                                <span id="display_RSI_LIMIT" class="font-bold text-indigo-500">...</span> / 
+                                <span id="display_TIME_CUT_MINUTES" class="font-bold text-pink-500">...</span>
+                            </div>
+                        </div>
+                        <div id="summary_row_UPPER_SHADOW" class="flex justify-between items-center p-1.5 rounded bg-slate-50 dark:bg-slate-700/50">
+                            <span class="text-slate-600 dark:text-slate-300 whitespace-nowrap">윗꼬리(분/일)</span><span id="display_UPPER_SHADOW_LIMIT" class="font-bold text-slate-900 dark:text-slate-100 text-right">...</span>
+                        </div>
+                        
+                        <div id="summary_row_OVERNIGHT" class="flex justify-between items-center p-1.5 rounded bg-slate-50 dark:bg-slate-700/50">
+                            <span class="text-slate-600 dark:text-slate-300 whitespace-nowrap">오버나잇 조건식</span><span id="display_OVERNIGHT_COND_IDS" class="font-bold text-purple-600 dark:text-purple-400 text-right">...</span>
+                        </div>
+                        <div id="summary_row_SL_TS" class="flex justify-between items-center p-1.5 rounded bg-slate-50 dark:bg-slate-700/50">
+                            <span class="text-slate-600 dark:text-slate-300 whitespace-nowrap">손절 / 익절 / 추적</span>
+                            <div class="space-x-1"><span id="display_STOP_LOSS_RATE" class="font-bold text-red-500">...</span> / <span id="display_TRAILING_START_RATE" class="font-bold text-green-500">...</span> / <span id="display_TRAILING_STOP_RATE" class="font-bold text-orange-500">...</span></div>
+                        </div>
+                        <div id="summary_row_DYN_TS" class="flex justify-between items-center p-1.5 rounded bg-slate-50 dark:bg-slate-700/50">
+                            <span class="text-slate-600 dark:text-slate-300 whitespace-nowrap">동적 TS</span>
+                            <span id="display_USE_DYNAMIC_TS" class="font-bold text-orange-500">...</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="p-6 bg-white dark:bg-slate-800 rounded-2xl shadow-lg border border-slate-200 dark:border-slate-700 transition-colors">
+                    <h2 class="text-xl font-bold mb-4 flex justify-between items-center">
+                        <span class="flex items-center gap-2">
+                            📡 실시간 포착
+                            <span class="relative flex h-3 w-3">
+                              <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                              <span class="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+                            </span>
+                        </span>
+                        <span class="px-3 py-1 bg-red-100 text-red-800 rounded-full text-sm" id="detected-count">0</span>
+                    </h2>
+                    <div class="overflow-y-auto max-h-[230px] border border-slate-200 dark:border-slate-700 rounded-lg">
+                        <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
+                            <thead class="bg-slate-50 dark:bg-slate-700 sticky top-0">
+                                <tr>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-slate-500 dark:text-slate-300">시간</th>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-slate-500 dark:text-slate-300">종목명</th>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-slate-500 dark:text-slate-300">코드</th>
+                                </tr>
+                            </thead>
+                            <tbody id="detected-stocks-table" class="divide-y divide-slate-200 dark:divide-slate-700 bg-white dark:bg-slate-800">
+                                <tr><td colspan="3" class="px-4 py-4 text-center text-slate-500 text-sm">대기 중...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="p-6 bg-white dark:bg-slate-800 rounded-2xl shadow-lg border border-slate-200 dark:border-slate-700 lg:col-span-3 flex flex-col transition-colors">
+                <div class="flex flex-col sm:flex-row justify-between items-center mb-4 gap-3">
+                    <div class="flex items-center gap-3 w-full sm:w-auto">
+                        <h2 class="text-xl font-bold flex items-center gap-2 text-slate-800 dark:text-slate-100">
+                            보유 종목
+                            <span class="px-2.5 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 text-xs font-bold" id="stock-count">0</span>
+                        </h2>
+                    </div>
+
+                    <div class="flex items-center gap-3 w-full sm:w-auto justify-end">
+                        <div class="hidden sm:flex items-center gap-3 px-3 py-1.5 bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600">
+                            <div class="text-right">
+                                <div class="text-[10px] text-slate-400 font-semibold uppercase">실현손익</div>
+                                <div id="realized-profit-val" class="text-xs font-bold font-mono">-</div>
+                            </div>
+                            <div class="w-px h-6 bg-slate-200 dark:bg-slate-600"></div>
+
+                            <div class="text-right">
+                                <div class="text-[10px] text-slate-400 font-semibold uppercase">평가손익</div>
+                                <div id="total-profit-val" class="text-xs font-bold font-mono">-</div>
+                            </div>
+                            <div class="w-px h-6 bg-slate-200 dark:bg-slate-600"></div>
+                            <div class="text-right">
+                                <div class="text-[10px] text-slate-400 font-semibold uppercase">수익률</div>
+                                <div id="total-rate-val" class="text-xs font-bold font-mono">-</div>
+                            </div>
+                        </div>
+
+                        <button onclick="requestBulkSell()" title="비상! 일괄 청산 (모두 매도)" class="group p-2.5 bg-white dark:bg-slate-800 border border-red-200 dark:border-red-900/50 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 hover:border-red-300 transition-all shadow-sm active:scale-95">
+                            <svg class="w-5 h-5 text-red-500 group-hover:text-red-600 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="overflow-x-auto flex-grow">
+                    <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
+                        <thead class="bg-slate-50 dark:bg-slate-700 transition-colors">
+                            <tr>
+                                <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-300">종목</th>
+                                <th class="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-300">수익률/손익</th>
+                                <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-300">평가금/수량</th>
+                            </tr>
+                        </thead>
+                        <tbody id="trading-state-table" class="divide-y divide-slate-200 dark:divide-slate-700">
+                            <tr><td colspan="3" class="px-4 py-10 text-center text-slate-500">보유 종목이 없습니다.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="p-6 bg-white dark:bg-slate-800 rounded-2xl shadow-lg border border-slate-200 dark:border-slate-700 lg:col-span-3 transition-colors">
+                
+                <div class="flex justify-between items-center mb-4 border-b border-slate-200 dark:border-slate-700 pb-2">
+                    <div class="flex space-x-6">
+                        <button id="tab-btn-trades" onclick="switchTab('trades')" class="text-xl font-bold flex items-center gap-2 text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400 pb-2 transition-colors">
+                            매매 기록 <span class="text-sm font-normal text-slate-500">(최근 <span id="trade-count">0</span>건)</span>
+                        </button>
+                        <button id="tab-btn-logs" onclick="switchTab('logs')" class="text-xl font-bold flex items-center gap-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 pb-2 transition-colors">
+                            시스템 로그
+                        </button>
+                    </div>
+                    
+                    <button id="refresh-trades-btn" class="p-2 text-slate-400 hover:text-blue-500 dark:hover:text-blue-400 bg-transparent hover:bg-slate-100 dark:hover:bg-slate-700 rounded-full transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-blue-500" title="새로고침">
+                        <svg id="refresh-icon" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                    </button>
+                </div>
+
+                <div id="tab-content-trades" class="w-full h-80 overflow-y-auto border border-slate-200 dark:border-slate-700 rounded-lg">
+                    <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700 relative">
+                        <thead class="hidden"><tr><th></th></tr></thead>
+                        <tbody id="trades-table-body" class="divide-y divide-slate-200 dark:divide-slate-700 bg-white dark:bg-slate-800 transition-colors">
+                            <tr><td colspan="6" class="px-4 py-10 text-center text-slate-500">매매 기록이 없습니다.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div id="tab-content-logs" class="hidden w-full h-80 overflow-y-auto border border-slate-200 dark:border-slate-700 rounded-lg bg-[#1e1e1e] p-4 font-mono text-sm text-[#d4d4d4]">
+                    <div id="system-log-container" class="space-y-1">
+                        <div class="text-center text-gray-500 mt-10">로그 데이터를 불러오는 중...</div>
+                    </div>
+                </div>
+
+            </div>
+        </div> 
+    </div>
+
+    <script>
+        // ... (기존 유틸리티 함수 등 유지) ...
+        const formatNum = (num) => new Intl.NumberFormat('ko-KR').format(num);
+        const formatRate = (rate) => {
+            const num = parseFloat(rate).toFixed(2);
+            const twColor = num > 0 ? 'text-red-500' : (num < 0 ? 'text-blue-500' : 'text-slate-800 dark:text-slate-200');
+            return `<span class="${twColor} font-bold">${num}%</span>`;
+        };
+
+        // --- 탭 전환 함수 ---
+        let currentTab = 'trades';
+        function switchTab(tabName) {
+            currentTab = tabName;
+            const tradesBtn = document.getElementById('tab-btn-trades');
+            const logsBtn = document.getElementById('tab-btn-logs');
+            const tradesContent = document.getElementById('tab-content-trades');
+            const logsContent = document.getElementById('tab-content-logs');
+
+            const activeClass = "text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400 text-slate-800 dark:text-slate-100";
+            const inactiveClass = "text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 border-b-0";
+
+            if (tabName === 'trades') {
+                tradesBtn.className = `text-xl font-bold flex items-center gap-2 pb-2 transition-colors ${activeClass}`;
+                logsBtn.className = `text-xl font-bold flex items-center gap-2 pb-2 transition-colors ${inactiveClass}`;
+                tradesContent.classList.remove('hidden');
+                logsContent.classList.add('hidden');
+            } else {
+                logsBtn.className = `text-xl font-bold flex items-center gap-2 pb-2 transition-colors ${activeClass}`;
+                tradesBtn.className = `text-xl font-bold flex items-center gap-2 pb-2 transition-colors ${inactiveClass}`;
+                logsContent.classList.remove('hidden');
+                tradesContent.classList.add('hidden');
+                loadSystemLogs(); // 탭 전환 시 로그 로드
+            }
+        }
+
+        async function requestBulkSell() {
+            if (!confirm("🚨 정말로 모든 보유 종목을 시장가로 매도하시겠습니까?\n(이 작업은 되돌릴 수 없습니다!)")) {
+                return;
+            }
+            try {
+                const response = await fetchAPI('/api/bulk_sell', { method: 'POST' });
+                if (response && response.success) {
+                    showMessage("🚨 일괄 청산 명령이 전송되었습니다.", "success");
+                } else {
+                    showMessage("명령 전송 실패", "error");
+                }
+            } catch (e) {
+                showMessage("통신 오류 발생", "error");
+            }
+        }
+
+        const themeToggleBtn = document.getElementById('theme-toggle');
+        const darkIcon = document.getElementById('theme-toggle-dark-icon');
+        const lightIcon = document.getElementById('theme-toggle-light-icon');
+
+        function setTheme(isDark) {
+            if (isDark) { document.documentElement.classList.add('dark'); lightIcon.classList.remove('hidden'); darkIcon.classList.add('hidden'); } 
+            else { document.documentElement.classList.remove('dark'); darkIcon.classList.remove('hidden'); lightIcon.classList.add('hidden'); }
+        }
+        const isDarkMode = localStorage.getItem('color-theme') === 'dark' || (!('color-theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        setTheme(isDarkMode);
+
+        themeToggleBtn.addEventListener('click', () => {
+            const isDark = document.documentElement.classList.contains('dark');
+            setTheme(!isDark);
+            localStorage.setItem('color-theme', !isDark ? 'dark' : 'light');
+        });
+
+        async function fetchAPI(url, options = {}) {
+            try {
+                const cacheBuster = url.includes('?') ? `&t=${Date.now()}` : `?t=${Date.now()}`;
+                const response = await fetch(url + cacheBuster, options);
+                if (response.status === 401) { window.location.href = '/login.html'; return null; }
+                if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
+                return await response.json();
+            } catch (error) { return null; }
+        }
+
+        const settingsForm = document.getElementById('settings-form');
+        const saveButton = settingsForm.querySelector('button[type="submit"]');
+        const originalButtonText = saveButton.innerHTML; 
+        const statusContainer = document.getElementById('status-container');
+        const statusLight = document.getElementById('status-light');
+        const statusText = document.getElementById('status-text');
+        const statusSubtext = document.getElementById('status-subtext');
+        const messageBox = document.getElementById('message-box');
+        const tradingStateTable = document.getElementById('trading-state-table');
+        const stockCount = document.getElementById('stock-count');
+        const tradesTableBody = document.getElementById('trades-table-body');
+        const tradeCount = document.getElementById('trade-count');
+        const detectedTableBody = document.getElementById('detected-stocks-table');
+        const detectedCount = document.getElementById('detected-count');
+        const totalProfitVal = document.getElementById('total-profit-val');
+        const totalRateVal = document.getElementById('total-rate-val');
+        const realizedProfitVal = document.getElementById('realized-profit-val'); 
+
+        let lastTradeCount = -1; 
+        
+        // [추가] 입력 필드 변경 감지 (10초간 서버 동기화 방지)
+        const lastInputInteraction = {};
+        
+        function initInputTrackers() {
+            const inputs = document.querySelectorAll('#settings-form input, #settings-form select');
+            inputs.forEach(el => {
+                const handler = () => {
+                    if(el.id) lastInputInteraction[el.id] = Date.now();
+                };
+                el.addEventListener('input', handler);
+                el.addEventListener('change', handler);
+            });
+        }
+        
+        const schedulerCheck = document.getElementById('USE_SCHEDULER');
+        const schedulerOptions = document.getElementById('scheduler-options');
+        const manualConditionBox = document.getElementById('manual-condition-box');
+
+        function toggleSchedulerUI() {
+            if (schedulerCheck.checked) {
+                schedulerOptions.classList.remove('hidden');
+                manualConditionBox.classList.add('hidden');
+            } else {
+                schedulerOptions.classList.add('hidden');
+                manualConditionBox.classList.remove('hidden');
+            }
+        }
+        schedulerCheck.addEventListener('change', toggleSchedulerUI);
+
+        // AI 손절가 토글 처리
+        const aiSlCheck = document.getElementById('USE_AI_STOP_LOSS');
+        const aiSafetyBox = document.getElementById('ai-safety-box');
+        function toggleAiSlUI() {
+            if (aiSlCheck.checked) {
+                aiSafetyBox.classList.remove('hidden');
+            } else {
+                aiSafetyBox.classList.add('hidden');
+            }
+        }
+        aiSlCheck.addEventListener('change', toggleAiSlUI);
+
+        // 손절매 전체 토글 처리
+        const slCheck = document.getElementById('USE_STOP_LOSS');
+        const slOptions = document.getElementById('stop-loss-options');
+        function toggleSlUI() {
+            if (slCheck.checked) {
+                slOptions.classList.remove('hidden');
+            } else {
+                slOptions.classList.add('hidden');
+            }
+        }
+        slCheck.addEventListener('change', toggleSlUI);
+
+        // 동적 TS 토글 처리
+        const dynTsCheck = document.getElementById('USE_DYNAMIC_TS');
+        const dynTsOptions = document.getElementById('dynamic-ts-options');
+        function toggleDynTsUI() {
+            if (dynTsCheck.checked) dynTsOptions.classList.remove('hidden');
+            else dynTsOptions.classList.add('hidden');
+        }
+        dynTsCheck.addEventListener('change', toggleDynTsUI);
+
+        // 물타기 옵션 토글 (체크박스 상태에 따라 입력창 활성/비활성 시각 효과)
+        const wateringCheck = document.getElementById('USE_WATERING');
+        const wateringOptions = document.getElementById('watering-options');
+        function toggleWateringUI() { if(wateringCheck.checked) wateringOptions.classList.remove('opacity-50', 'pointer-events-none'); else wateringOptions.classList.add('opacity-50', 'pointer-events-none'); }
+        wateringCheck.addEventListener('change', toggleWateringUI);
+
+        async function updateBotStatus() {
+            const data = await fetchAPI('/api/status'); 
+            if (data) {
+                let status = data.bot_status || "OFFLINE";
+                let activeMode = data.active_mode || "";
+                let isOffline = data.is_offline;
+                let lastSyncAgo = data.last_sync_ago || 999;
+
+                const summaryStatus = document.getElementById('display_BOT_STATUS');
+
+                if (isOffline || status === 'OFFLINE') {
+                    statusContainer.className = "flex flex-col items-center justify-center p-6 bg-slate-200 dark:bg-slate-700 rounded-xl transition-all duration-300 border-2 border-slate-300 dark:border-slate-600";
+                    statusLight.className = "w-6 h-6 rounded-full bg-slate-500 mb-2 shadow-lg";
+                    statusText.textContent = "⛔ 연결 끊김";
+                    statusText.className = "font-bold text-2xl tracking-tight text-slate-500 dark:text-slate-400";
+                    statusSubtext.textContent = `마지막 응답: ${lastSyncAgo}초 전`;
+                    if(summaryStatus) summaryStatus.innerHTML = '<span class="text-slate-500 font-bold">⛔ OFFLINE</span>';
+                
+                } else if (status === 'SLEEPING') {
+                    statusContainer.className = "flex flex-col items-center justify-center p-6 bg-purple-50 dark:bg-purple-900/20 rounded-xl transition-all duration-300 border-2 border-purple-200 dark:border-purple-800";
+                    statusLight.className = "w-6 h-6 rounded-full bg-purple-500 mb-2 shadow-[0_0_15px_rgba(168,85,247,0.5)]";
+                    statusText.textContent = "🌙 장 마감 대기";
+                    statusText.className = "font-bold text-2xl tracking-tight text-purple-600 dark:text-purple-400";
+                    statusSubtext.textContent = "봇이 휴식 중입니다 (매도 감시 중)";
+                    if(summaryStatus) summaryStatus.innerHTML = '<span class="text-purple-600 font-bold">🌙 대기 모드</span>';
+
+                } else if (status === 'BREAK_TIME') {
+                    statusContainer.className = "flex flex-col items-center justify-center p-6 bg-orange-50 dark:bg-orange-900/20 rounded-xl transition-all duration-300 border-2 border-orange-200 dark:border-orange-800";
+                    statusLight.className = "w-6 h-6 rounded-full bg-orange-500 mb-2 shadow-[0_0_15px_rgba(249,115,22,0.5)]";
+                    statusText.textContent = "☕ 휴식 시간";
+                    statusText.className = "font-bold text-2xl tracking-tight text-orange-600 dark:text-orange-400";
+                    statusSubtext.textContent = "매수 중지 시간입니다 (매도 감시 중)";
+                    if(summaryStatus) summaryStatus.innerHTML = '<span class="text-orange-500 font-bold">☕ 휴식 중</span>';
+
+                } else if (status === 'RUNNING') {
+                    statusContainer.className = "flex flex-col items-center justify-center p-6 bg-green-50 dark:bg-green-900/20 rounded-xl transition-all duration-300 border-2 border-green-200 dark:border-green-800";
+                    statusLight.className = "w-6 h-6 rounded-full bg-green-500 mb-2 shadow-[0_0_15px_rgba(34,197,94,0.6)] animate-pulse-fast";
+                    statusText.textContent = "⚡ 가동 중";
+                    statusText.className = "font-bold text-2xl tracking-tight text-green-600 dark:text-green-400";
+                    statusSubtext.textContent = "실시간 매매 감시 중입니다";
+                    if(summaryStatus) summaryStatus.innerHTML = '<span class="text-green-600 font-bold">⚡ 가동 중</span>';
+
+                } else {
+                    statusContainer.className = "flex flex-col items-center justify-center p-6 bg-yellow-50 dark:bg-yellow-900/20 rounded-xl transition-all duration-300 border-2 border-yellow-200 dark:border-yellow-800";
+                    statusLight.className = "w-6 h-6 rounded-full bg-yellow-500 mb-2 shadow-lg";
+                    statusText.textContent = "⏸ 대기 중";
+                    statusText.className = "font-bold text-2xl tracking-tight text-yellow-600 dark:text-yellow-400";
+                    statusSubtext.textContent = "매수가 중지되었습니다";
+                    if(summaryStatus) summaryStatus.innerHTML = '<span class="text-yellow-500 font-bold">⏸ 정지됨</span>';
+                }
+
+                const badge = document.getElementById('mode-badge');
+                if (data.active_mode === 'REAL' || (activeMode && activeMode.includes('REAL'))) {
+                    badge.textContent = "🔴 실전투자";
+                    badge.className = "px-2 py-1 text-xs font-bold rounded bg-red-100 text-red-600 border border-red-200 animate-pulse shadow-sm";
+                } else {
+                    badge.textContent = "🔵 모의투자";
+                    badge.className = "px-2 py-1 text-xs font-bold rounded bg-green-100 text-green-600 border border-green-200 shadow-sm";
+                }
+                
+                updateTradingStateTable(data.trading_state);
+                
+                if (data.account_summary) {
+                    const sum = data.account_summary;
+                    const rp = sum.realized_profit || 0;
+                    const rpClass = rp > 0 ? 'text-red-500' : (rp < 0 ? 'text-blue-500' : 'text-slate-500');
+                    realizedProfitVal.textContent = rp.toLocaleString() + '원';
+                    realizedProfitVal.className = `text-xs font-bold font-mono ${rpClass}`;
+
+                    const profitClass = sum.total_profit > 0 ? 'text-red-500' : (sum.total_profit < 0 ? 'text-blue-500' : 'text-slate-500');
+                    totalProfitVal.textContent = sum.total_profit.toLocaleString() + '원';
+                    totalProfitVal.className = `text-xs font-bold font-mono ${profitClass}`;
+                    
+                    totalRateVal.textContent = sum.total_rate.toFixed(2) + '%';
+                    totalRateVal.className = `text-xs font-bold font-mono ${profitClass}`;
+                } else {
+                    realizedProfitVal.textContent = '-';
+                    totalProfitVal.textContent = '-';
+                    totalRateVal.textContent = '-';
+                }
+
+                const themesEl = document.getElementById('display_LEADING_THEMES');
+                if (data.leading_themes && data.leading_themes.length > 0) {
+                    themesEl.textContent = data.leading_themes.join(', ');
+                } else {
+                    themesEl.textContent = '수집 대기 중...';
+                }
+            }
+        }
+
+        function updateTradingStateTable(state) {
+            tradingStateTable.innerHTML = '';
+            const stocks = state || {};
+            const keys = Object.keys(stocks);
+            stockCount.textContent = keys.length;
+
+            if (keys.length === 0) {
+                tradingStateTable.innerHTML = '<tr><td colspan="3" class="px-4 py-10 text-center text-slate-500">보유 종목이 없습니다.</td></tr>';
+                return;
+            }
+
+            keys.forEach(stockCode => {
+                const data = stocks[stockCode];
+                const profitRate = data.current_profit_rate || 0;
+                const totalBuyAmt = data.buy_price * data.buy_qty;
+                const profitAmt = Math.floor(totalBuyAmt * (profitRate / 100));
+                const profitAmtStr = profitAmt.toLocaleString();
+                const sign = profitAmt > 0 ? "+" : "";
+
+                let profitClass = profitRate > 0 ? 'text-red-500' : (profitRate < 0 ? 'text-blue-500' : 'text-slate-500');
+                const strategy = data.applied_strategy || { sl: '-', ts_start: '-', ts_stop: '-' };
+
+                const row = `
+                    <tr class="hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors border-b border-slate-100 dark:border-slate-700">
+                        <td class="px-4 py-3">
+                            <div class="font-bold text-slate-700 dark:text-slate-200">${data.stk_nm || stockCode}</div>
+                            <div class="text-xs text-slate-400 font-mono">${stockCode}</div>
+                            <div class="text-[10px] text-blue-500 mt-1">${data.condition_from || '알수없음'}</div>
+                        </td>
+                        <td class="px-4 py-3 text-center">
+                            <div class="text-base font-bold ${profitClass}">${profitRate.toFixed(2)}%</div>
+                            <div class="text-xs font-bold ${profitClass} mt-0.5">${sign}${profitAmtStr}원</div>
+                            <div class="text-xs text-slate-500 mt-1"><span class="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-600">${data.status || '대기'}</span></div>
+                        </td>
+                        <td class="px-4 py-3 text-right">
+                            <div class="text-sm font-medium text-slate-700 dark:text-slate-300">${(data.buy_price * data.buy_qty).toLocaleString()}원</div>
+                            <div class="text-xs text-slate-400 mb-1">${data.buy_qty}주 / 평단 ${(data.buy_price).toLocaleString()}</div>
+                            <div class="text-[10px] text-slate-400 bg-slate-100 dark:bg-slate-800 rounded px-1 py-0.5 inline-block">
+                                SL ${strategy.sl}% | TS ${strategy.ts_start}% / ${strategy.ts_stop}%
+                            </div>
+                        </td>
+                    </tr>`;
+                tradingStateTable.innerHTML += row;
+            });
+        }
+
+        async function updateDetectedStocks() {
+            const data = await fetchAPI('/api/current_conditions');
+            detectedTableBody.innerHTML = '';
+            if (data && data.stocks && data.stocks.length > 0) {
+                detectedCount.textContent = data.stocks.length;
+                data.stocks.forEach(stock => {
+                    const row = `
+                        <tr class="hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
+                            <td class="px-4 py-2 text-sm text-slate-500">${stock.time}</td>
+                            <td class="px-4 py-2 text-sm font-bold text-slate-700 dark:text-slate-200">${stock.name}</td>
+                            <td class="px-4 py-2 text-sm text-slate-400 text-xs">${stock.code}</td>
+                        </tr>`;
+                    detectedTableBody.innerHTML += row;
+                });
+            } else { detectedCount.textContent = 0; detectedTableBody.innerHTML = '<tr><td colspan="3" class="px-4 py-8 text-center text-slate-500 text-sm">현재 포착된 종목이 없습니다.</td></tr>'; }
+        }
+
+        async function loadSettings(onlySummary = false) {
+            const data = await fetchAPI('/api/settings');
+            if (data) {
+                if (!onlySummary) {
+                    Object.keys(data).forEach(key => {
+                        const el = document.getElementById(key);
+                        if (el) {
+                            // [수정] 사용자가 입력 중(Focus)이거나, 최근 10초 내에 변경한 경우 서버 값 덮어쓰기 방지
+                            if (document.activeElement === el) return;
+                            
+                            const lastInteracted = lastInputInteraction[key] || 0;
+                            if (Date.now() - lastInteracted < 10000) return;
+
+                            if (el.type === 'checkbox') {
+                                el.checked = data[key] !== false;
+                                if(key === 'USE_SCHEDULER') toggleSchedulerUI();
+                                if(key === 'USE_AI_STOP_LOSS') toggleAiSlUI(); 
+                                if(key === 'USE_STOP_LOSS') toggleSlUI();
+                                if(key === 'USE_DAILY_SHADOW_FILTER') document.getElementById('USE_DAILY_SHADOW_FILTER').checked = data[key] !== false;
+                                if(key === 'USE_DYNAMIC_TS') {
+                                    el.checked = data[key] === true;
+                                    toggleDynTsUI();
+                                }
+                                if(key.startsWith('DYN_TS_LV')) {
+                                    el.value = data[key];
+                                }
+                                if(key === 'USE_WATERING') {
+                                    el.checked = data[key] === true;
+                                    toggleWateringUI();
+                                }
+                                if(key === 'USE_THEME_FILTER') {
+                                    el.checked = data[key] !== false;
+                                }
+                            }
+                            else el.value = data[key];
+                        }
+                    });
+                }
+                
+                // 0도 유효한 값으로 인정하는 헬퍼 함수
+                const valOrDefault = (val, def) => (val !== undefined && val !== null) ? val : def;
+
+                const simpleMappings = {
+                    MOCK_TRADE: val => val ? '<span class="text-green-600">🔵 모의투자</span>' : '<span class="text-red-600 animate-pulse">🔴 실전투자</span>',
+                    // 🌟 [추가] 지수 필터 요약 표시
+                    USE_MARKET_FILTER: val => val ? '<span class="font-bold text-red-500">📉 ON</span>' : '<span class="font-bold text-slate-400">OFF</span>',
+                    USE_THEME_FILTER: val => val ? `<span class="font-bold text-red-500">🔥 ON (${data.THEME_TOP_N || 3}위)</span>` : '<span class="font-bold text-slate-400">OFF</span>',
+                    USE_MARKET_TIME: val => val ? '<span class="font-bold text-slate-700 dark:text-slate-200">⏰ 09:00~15:30</span>' : '<span class="font-bold text-purple-500">🌙 24시간</span>',
+                    USE_BREAK_TIME: val => val ? `<span class="font-bold text-orange-500">☕ ${data.BREAK_START}~${data.BREAK_END}</span>` : '<span class="font-bold text-slate-400">OFF</span>',
+                    USE_AUTO_SELL: val => val ? '<span class="font-bold text-blue-600">🛡️ 감시 ON</span>' : '<span class="font-bold text-red-500">⚠️ 감시 OFF</span>',
+                    USE_TELEGRAM: val => val ? '<span class="font-bold text-blue-500">🔔 ON</span>' : '<span class="font-bold text-slate-400">🔕 OFF</span>',
+                    DEBUG_MODE: val => val ? '<span class="font-bold text-orange-500">🕵️ ON</span>' : '<span class="font-bold text-slate-400">🔒 OFF</span>',
+                    USE_SCHEDULER: val => val ? '<span class="font-bold text-blue-500">⏰ ON</span>' : '<span class="font-bold text-slate-400">OFF</span>',
+                    USE_AI_STOP_LOSS: val => {
+                        if (!val) return '<span class="font-bold text-slate-400">⚙️ 설정값</span>';
+                        const limit = valOrDefault(data.AI_STOP_LOSS_SAFETY_LIMIT, -5.0);
+                        return `<span class="font-bold text-indigo-500">🤖 AI (Limit ${limit}%)</span>`;
+                    },
+                    ORDER_AMOUNT: val => val.toLocaleString() + ' 원',
+                    STOP_LOSS_RATE: val => val + ' %',
+                    TRAILING_START_RATE: val => val + ' %',
+                    TRAILING_STOP_RATE: val => val + ' %',
+                    USE_DYNAMIC_TS: val => {
+                        if(!val) return '<span class="text-slate-400">OFF (고정)</span>';
+                        
+                        const l1t = valOrDefault(data.DYN_TS_LV1_TRIGGER, 5.0);
+                        const l1d = valOrDefault(data.DYN_TS_LV1_DROP, -2.0);
+                        const l2t = valOrDefault(data.DYN_TS_LV2_TRIGGER, 10.0);
+                        const l2d = valOrDefault(data.DYN_TS_LV2_DROP, -3.0);
+                        const l3t = valOrDefault(data.DYN_TS_LV3_TRIGGER, 20.0);
+                        const l3d = valOrDefault(data.DYN_TS_LV3_DROP, -5.0);
+
+                        return `<div class="text-right"><span class="text-orange-500 font-bold">🌊 ON</span><div class="text-[9px] text-slate-500 dark:text-slate-400 leading-tight mt-0.5">${l1t}%(<span class="text-red-500">${l1d}%</span>) | ${l2t}%(<span class="text-red-500">${l2d}%</span>) | ${l3t}%(<span class="text-red-500">${l3d}%</span>)</div></div>`;
+                    },
+                    USE_WATERING: val => {
+                        if(!val) return '<span class="font-bold text-slate-400">OFF</span>';
+                        const cnt = valOrDefault(data.MAX_WATERING_COUNT, 1);
+                        const amt = valOrDefault(data.MAX_WATERING_AMOUNT, 2000000);
+                        return `<div class="text-right"><span class="text-blue-600 font-bold">💧 ON</span><div class="text-[9px] text-slate-500 dark:text-slate-400 leading-tight mt-0.5">최대 ${cnt}회 / ${amt.toLocaleString()}원</div></div>`;
+                    },
+                    OVERNIGHT_COND_IDS: val => val,
+                    RSI_LIMIT: val => valOrDefault(val, 70.0),
+                    UPPER_SHADOW_LIMIT: val => {
+                        const m = valOrDefault(val, 0.4);
+                        const d = valOrDefault(data.DAILY_SHADOW_LIMIT, 0.5);
+                        const useM = data.USE_UPPER_SHADOW_FILTER !== false;
+                        const useD = data.USE_DAILY_SHADOW_FILTER !== false;
+                        const mText = useM ? `<span class="font-bold text-slate-900 dark:text-slate-100">${m}</span>` : `<span class="text-slate-400 line-through">${m}</span>`;
+                        const dText = useD ? `<span class="font-bold text-slate-900 dark:text-slate-100">${d}</span>` : `<span class="text-slate-400 line-through">${d}</span>`;
+                        return `${mText} / ${dText}`;
+                    },
+                    TIME_CUT_MINUTES: val => val + ' 분'
+                };
+
+                for (const [key, formatter] of Object.entries(simpleMappings)) {
+                    const el = document.getElementById('display_' + key);
+                    if (el && data[key] !== undefined) el.innerHTML = formatter(data[key]);
+                }
+
+                // 목표가 분할 매도 요약 표시 (비율 포함)
+                const ppEl = document.getElementById('display_USE_PARTIAL_PROFIT');
+                if (ppEl) {
+                    const ppRate = valOrDefault(data.PARTIAL_PROFIT_RATE, 50);
+                    ppEl.innerHTML = data.USE_PARTIAL_PROFIT ? `<span class="font-bold text-green-600">💰 ON (${ppRate}%)</span>` : '<span class="font-bold text-slate-400">OFF</span>';
+                }
+
+                // 쿨타임 통합 표시
+                const reEntry = data.RE_ENTRY_COOLDOWN_MIN !== undefined ? data.RE_ENTRY_COOLDOWN_MIN : 30;
+                const aiReject = data.AI_REJECTION_COOLDOWN_MIN !== undefined ? data.AI_REJECTION_COOLDOWN_MIN : 10;
+                const useReEntry = data.USE_RE_ENTRY_COOLDOWN !== false;
+                const useAiReject = data.USE_AI_REJECTION_COOLDOWN !== false;
+                
+                let cooldownText = "";
+                cooldownText += useReEntry ? `매도후 ${reEntry}분` : `<span class="text-slate-400 line-through decoration-2 decoration-slate-400">매도후</span>`;
+                cooldownText += " / ";
+                cooldownText += useAiReject ? `AI거절 ${aiReject}분` : `<span class="text-slate-400 line-through decoration-2 decoration-slate-400">AI거절</span>`;
+                
+                document.getElementById('display_COOLDOWN_INFO').innerHTML = cooldownText;
+
+                const condEl = document.getElementById('display_CONDITION_NAME');
+                const select = document.getElementById('CONDITION_ID');
+                let condName = data.CONDITION_ID || "선택 안됨";
+                if (select.options.length > 0) {
+                    for (let i = 0; i < select.options.length; i++) {
+                        if (select.options[i].value == data.CONDITION_ID) { condName = select.options[i].text; break; }
+                    }
+                }
+                condEl.textContent = condName;
+                
+                const hogaEl = document.getElementById('display_MIN_BUY_SELL_RATIO');
+                if(hogaEl && data.MIN_BUY_SELL_RATIO !== undefined) {
+                    let hogaText = `Min <strong>${data.MIN_BUY_SELL_RATIO}</strong>`;
+                    if (data.USE_FAKE_BUY_FILTER !== false) {
+                        hogaText += ` / Max <strong>${data.MAX_BUY_SELL_RATIO || 10.0}</strong>`;
+                    }
+                    hogaEl.innerHTML = hogaText;
+                }
+
+                const volEl = document.getElementById('display_VOLUME_FILTER');
+                if(volEl) {
+                    const volRatio = valOrDefault(data.VOLUME_FILTER_RATIO, 0.3);
+                    volEl.innerHTML = data.USE_VOLUME_FILTER ? `<span class="font-bold text-cyan-600">ON (${volRatio})</span>` : '<span class="font-bold text-slate-400">OFF</span>';
+                }
+
+                // 🌟 [추가] 설정값에 따라 요약 행 숨기기/보이기
+                const toggleRow = (id, show) => {
+                    const el = document.getElementById(id);
+                    if(el) { if(show) el.classList.remove('hidden'); else el.classList.add('hidden'); }
+                };
+                const getVal = (k, def) => data[k] !== undefined ? data[k] : def;
+
+                toggleRow('summary_row_MARKET_FILTER', getVal('USE_MARKET_FILTER', false));
+                toggleRow('summary_row_THEME_FILTER', getVal('USE_THEME_FILTER', true));
+                toggleRow('summary_row_LEADING_THEMES', getVal('USE_THEME_FILTER', true));
+                toggleRow('summary_row_TIME_AUTOSELL', getVal('USE_MARKET_TIME', true) || getVal('USE_AUTO_SELL', true));
+                toggleRow('summary_row_BREAK_TIME', getVal('USE_BREAK_TIME', false));
+                toggleRow('summary_row_PARTIAL_PROFIT', true);
+                toggleRow('summary_row_WATERING', getVal('USE_WATERING', false));
+                toggleRow('summary_row_AI_STOP_LOSS', getVal('USE_AI_STOP_LOSS', true));
+                toggleRow('summary_row_TELEGRAM_DEBUG', getVal('USE_TELEGRAM', true) || getVal('DEBUG_MODE', false));
+                toggleRow('summary_row_SCHEDULER', getVal('USE_SCHEDULER', true));
+                toggleRow('summary_row_HOGA', getVal('USE_HOGA_FILTER', true));
+                toggleRow('summary_row_VOLUME', getVal('USE_VOLUME_FILTER', true));
+                toggleRow('summary_row_RSI_TIME', getVal('USE_RSI_FILTER', true) || getVal('USE_TIME_CUT', true));
+                toggleRow('summary_row_UPPER_SHADOW', getVal('USE_UPPER_SHADOW_FILTER', true) || getVal('USE_DAILY_SHADOW_FILTER', true));
+                const ovIds = getVal('OVERNIGHT_COND_IDS', '2');
+                toggleRow('summary_row_OVERNIGHT', ovIds && String(ovIds).trim() !== "");
+                toggleRow('summary_row_SL_TS', getVal('USE_STOP_LOSS', true) || getVal('USE_TRAILING_STOP', true));
+                toggleRow('summary_row_DYN_TS', getVal('USE_DYNAMIC_TS', false));
+            }
+        }
+
+        async function loadConditions() {
+            const data = await fetchAPI('/api/conditions');
+            const selectEl = document.getElementById('CONDITION_ID');
+            const morningSelect = document.getElementById('MORNING_COND');
+            const lunchSelect = document.getElementById('LUNCH_COND');
+            const afternoonSelect = document.getElementById('AFTERNOON_COND');
+            
+            [selectEl, morningSelect, lunchSelect, afternoonSelect].forEach(el => el.innerHTML = ''); 
+
+            if (data && data.conditions && data.conditions.length > 0) {
+                data.conditions.forEach(cond => {
+                    const option = document.createElement('option');
+                    option.value = cond.id;
+                    option.textContent = `${cond.name} (${cond.id})`;
+                    
+                    selectEl.appendChild(option.cloneNode(true));
+                    morningSelect.appendChild(option.cloneNode(true));
+                    lunchSelect.appendChild(option.cloneNode(true));
+                    afternoonSelect.appendChild(option.cloneNode(true));
+                });
+                loadSettings(); 
+            } else { 
+                const opt = '<option value="">조건검색식 없음</option>';
+                [selectEl, morningSelect, lunchSelect, afternoonSelect].forEach(el => el.innerHTML = opt);
+            }
+        }
+        
+        async function loadTradesLog(forceUpdate = false) {
+            const data = await fetchAPI('/api/trades');
+            if (data && data.trades) {
+                if (!forceUpdate && data.trades.length === lastTradeCount) return;
+                lastTradeCount = data.trades.length;
+                tradeCount.textContent = lastTradeCount;
+                tradesTableBody.innerHTML = ''; 
+
+                if (lastTradeCount > 0) {
+                    data.trades.forEach(trade => {
+                        const actionBadge = trade.action === 'BUY' 
+                            ? '<span class="px-2 py-0.5 rounded text-xs font-bold bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-300">매수</span>'
+                            : (trade.action === 'SELL' 
+                                ? '<span class="px-2 py-0.5 rounded text-xs font-bold bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">매도</span>' 
+                                : '<span class="px-2 py-0.5 rounded text-xs font-bold bg-gray-100 text-gray-600">기타</span>');
+                        const profit = parseFloat(trade.profit_rate || 0);
+                        const profitColor = profit > 0 ? 'text-red-500' : (profit < 0 ? 'text-blue-500' : 'text-slate-400');
+                        const profitText = trade.action === 'SELL' ? `<span class="font-bold ${profitColor}">${profit.toFixed(2)}%</span>` : '';
+                        
+                        let aiReasonHtml = '';
+                        if (trade.ai_reason && trade.ai_reason !== 'None' && trade.ai_reason !== '') {
+                            aiReasonHtml = `<div class="mt-1 text-xs text-indigo-500 dark:text-indigo-400 flex items-center gap-1" title="${trade.ai_reason}">
+                                <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a6 6 0 00-6 6v3.586l-.707.707A1 1 0 004 14h12a1 1 0 00.707-1.707L16 11.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-3-3h6a3 3 0 01-3 3z"/></svg>
+                                <span>AI 분석: ${trade.ai_reason}</span>
+                            </div>`;
+                        }
+
+                        const row = `
+                            <tr class="border-b border-slate-100 dark:border-slate-700/50 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
+                                <td colspan="6" class="p-4">
+                                    <div class="flex justify-between items-start mb-1">
+                                        <div class="flex items-center gap-2">
+                                            ${actionBadge}
+                                            <span class="font-bold text-slate-800 dark:text-slate-200 text-sm md:text-base">${trade.stock_name}</span>
+                                            <span class="text-xs text-slate-400">(${trade.stock_code || '-'})</span>
+                                        </div>
+                                        <div class="text-right">${profitText}</div>
+                                    </div>
+                                    <div class="flex justify-between items-center text-xs md:text-sm text-slate-500 dark:text-slate-400">
+                                        <div class="flex gap-2 items-center">
+                                            <span>${trade.timestamp}</span>
+                                            <span class="w-px h-3 bg-slate-300 dark:bg-slate-600"></span>
+                                            <span>${parseInt(trade.price).toLocaleString()}원</span>
+                                            <span class="text-slate-400">x ${trade.qty}</span>
+                                        </div>
+                                        <div class="truncate max-w-[120px] md:max-w-xs text-slate-400" title="${trade.reason}">${trade.reason}</div>
+                                    </div>
+                                    ${aiReasonHtml}
+                                </td>
+                            </tr>`;
+                        tradesTableBody.innerHTML += row;
+                    });
+                } else { tradesTableBody.innerHTML = '<tr><td colspan="6" class="px-4 py-10 text-center text-slate-500">매매 기록이 없습니다.</td></tr>'; }
+            }
+        }
+
+        async function loadSystemLogs() {
+            try {
+                const res = await fetchAPI('/api/logs');
+                const data = res; 
+                const container = document.getElementById('system-log-container');
+                const scrollParent = container.parentElement;
+
+                const isAtBottom = scrollParent.scrollHeight - scrollParent.scrollTop - scrollParent.clientHeight < 50;
+                
+                if (data && data.logs && data.logs.length > 0) {
+                    const sortedLogs = [...data.logs].reverse(); 
+                    const html = sortedLogs.map(log => {
+                        const timeStr = log.timestamp.substring(5);
+                        const levelClass = `log-${log.level}`;
+                        return `
+                            <div class="log-entry ${levelClass}">
+                                <span class="text-blue-400 mr-2">[${timeStr}]</span>
+                                <span class="font-bold mr-2">[${log.module}]</span>
+                                ${log.message}
+                            </div>
+                        `;
+                    }).join('');
+                    
+                    container.innerHTML = html;
+                    
+                    if (isAtBottom) {
+                        scrollParent.scrollTop = scrollParent.scrollHeight;
+                    }
+                } else {
+                    container.innerHTML = '<div class="text-center text-gray-500 mt-10">로그 데이터가 없습니다.</div>';
+                }
+            } catch (err) { 
+                console.error("System Log Error:", err); 
+            }
+        }
+
+        function showMessage(message, type = 'success') {
+            messageBox.classList.remove('hidden', 'animate-fade-out-up');
+            messageBox.className = `fixed top-10 left-1/2 transform -translate-x-1/2 z-50 min-w-[320px] max-w-md px-6 py-4 rounded-xl shadow-2xl font-bold text-sm md:text-base text-center animate-fade-in-down backdrop-blur-md border transition-all ${type === 'success' ? 'bg-green-600/95 text-white border-green-500' : 'bg-red-600/95 text-white border-red-500'}`;
+            messageBox.textContent = message;
+            setTimeout(() => { messageBox.classList.remove('animate-fade-in-down'); messageBox.classList.add('animate-fade-out-up'); setTimeout(() => messageBox.classList.add('hidden'), 500); }, 3000);
+        }
+
+        settingsForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            saveButton.disabled = true;
+            saveButton.innerHTML = `<span class="loader-white"></span> 저장 중...`;
+            const isMockCheck = document.getElementById('MOCK_TRADE').checked;
+            const formData = new FormData(settingsForm);
+            const settings = Object.fromEntries(formData.entries());
+            
+            settings.ORDER_AMOUNT = parseInt(settings.ORDER_AMOUNT);
+            settings.STOP_LOSS_RATE = parseFloat(settings.STOP_LOSS_RATE);
+            settings.TRAILING_START_RATE = parseFloat(settings.TRAILING_START_RATE);
+            settings.TRAILING_STOP_RATE = parseFloat(settings.TRAILING_STOP_RATE);
+            settings.RE_ENTRY_COOLDOWN_MIN = parseInt(settings.RE_ENTRY_COOLDOWN_MIN);
+            settings.AI_REJECTION_COOLDOWN_MIN = parseInt(settings.AI_REJECTION_COOLDOWN_MIN || 10);
+            settings.MIN_BUY_SELL_RATIO = parseFloat(settings.MIN_BUY_SELL_RATIO);
+            settings.MAX_BUY_SELL_RATIO = parseFloat(settings.MAX_BUY_SELL_RATIO);
+            settings.VOLUME_FILTER_RATIO = parseFloat(settings.VOLUME_FILTER_RATIO || 0.3);
+            
+            settings.USE_MARKET_TIME = document.getElementById('USE_MARKET_TIME').checked;
+            settings.USE_AUTO_SELL = document.getElementById('USE_AUTO_SELL').checked;
+            settings.USE_PARTIAL_PROFIT = document.getElementById('USE_PARTIAL_PROFIT').checked;
+            settings.PARTIAL_PROFIT_RATE = parseFloat(document.getElementById('PARTIAL_PROFIT_RATE').value || 50);
+            settings.USE_TELEGRAM = document.getElementById('USE_TELEGRAM').checked;
+            settings.DEBUG_MODE = document.getElementById('DEBUG_MODE').checked;
+            settings.MOCK_TRADE = document.getElementById('MOCK_TRADE').checked;
+            settings.USE_SCHEDULER = document.getElementById('USE_SCHEDULER').checked;
+            
+            // 🌟 [추가] 지수 필터 체크박스 처리
+            settings.USE_MARKET_FILTER = document.getElementById('USE_MARKET_FILTER').checked;
+            
+            settings.USE_THEME_FILTER = document.getElementById('USE_THEME_FILTER').checked;
+            settings.THEME_TOP_N = parseInt(settings.THEME_TOP_N || 3);
+            
+            settings.USE_VOLUME_FILTER = document.getElementById('USE_VOLUME_FILTER').checked;
+            settings.USE_HOGA_FILTER = document.getElementById('USE_HOGA_FILTER').checked;
+            settings.USE_FAKE_BUY_FILTER = document.getElementById('USE_FAKE_BUY_FILTER').checked;
+            settings.USE_RSI_FILTER = document.getElementById('USE_RSI_FILTER').checked;
+            settings.USE_TIME_CUT = document.getElementById('USE_TIME_CUT').checked;
+            settings.USE_UPPER_SHADOW_FILTER = document.getElementById('USE_UPPER_SHADOW_FILTER').checked;
+            settings.USE_DAILY_SHADOW_FILTER = document.getElementById('USE_DAILY_SHADOW_FILTER').checked;
+            settings.USE_STOP_LOSS = document.getElementById('USE_STOP_LOSS').checked;
+            settings.USE_TRAILING_STOP = document.getElementById('USE_TRAILING_STOP').checked;
+            settings.USE_RE_ENTRY_COOLDOWN = document.getElementById('USE_RE_ENTRY_COOLDOWN').checked;
+            settings.USE_AI_REJECTION_COOLDOWN = document.getElementById('USE_AI_REJECTION_COOLDOWN').checked;
+            settings.USE_BREAK_TIME = document.getElementById('USE_BREAK_TIME').checked;
+
+            settings.USE_DYNAMIC_TS = document.getElementById('USE_DYNAMIC_TS').checked;
+            settings.DYN_TS_LV1_TRIGGER = parseFloat(document.getElementById('DYN_TS_LV1_TRIGGER').value || 5.0);
+            settings.DYN_TS_LV1_DROP = parseFloat(document.getElementById('DYN_TS_LV1_DROP').value || -2.0);
+            settings.DYN_TS_LV2_TRIGGER = parseFloat(document.getElementById('DYN_TS_LV2_TRIGGER').value || 10.0);
+            settings.DYN_TS_LV2_DROP = parseFloat(document.getElementById('DYN_TS_LV2_DROP').value || -3.0);
+            settings.DYN_TS_LV3_TRIGGER = parseFloat(document.getElementById('DYN_TS_LV3_TRIGGER').value || 20.0);
+            settings.DYN_TS_LV3_DROP = parseFloat(document.getElementById('DYN_TS_LV3_DROP').value || -5.0);
+
+            settings.USE_WATERING = document.getElementById('USE_WATERING').checked;
+            settings.MAX_WATERING_COUNT = parseInt(document.getElementById('MAX_WATERING_COUNT').value || 1);
+            settings.MAX_WATERING_AMOUNT = parseInt(document.getElementById('MAX_WATERING_AMOUNT').value || 2000000);
+
+            settings.USE_AI_STOP_LOSS = document.getElementById('USE_AI_STOP_LOSS').checked;
+            settings.AI_STOP_LOSS_SAFETY_LIMIT = parseFloat(settings.AI_STOP_LOSS_SAFETY_LIMIT || -5.0);
+            
+            settings.RSI_LIMIT = parseFloat(settings.RSI_LIMIT || 70.0);
+            settings.TIME_CUT_MINUTES = parseInt(settings.TIME_CUT_MINUTES || 20);
+            settings.UPPER_SHADOW_LIMIT = parseFloat(settings.UPPER_SHADOW_LIMIT || 0.4);
+            settings.DAILY_SHADOW_LIMIT = parseFloat(settings.DAILY_SHADOW_LIMIT || 0.5);
+
+            if (!isMockCheck) {
+                if (!confirm("⚠️ [경고] '실전 투자' 모드입니다!\n정말로 저장하시겠습니까?")) {
+                    document.getElementById('MOCK_TRADE').checked = true;
+                    saveButton.disabled = false; saveButton.innerHTML = originalButtonText; return; 
+                }
+            }
+            try {
+                await fetchAPI('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) });
+                showMessage('설정이 저장되었습니다.');
+                updateBotStatus(); loadSettings(); 
+            } catch (error) {} finally { saveButton.disabled = false; saveButton.innerHTML = originalButtonText; }
+        });
+        
+        document.getElementById('logout-button').addEventListener('click', async () => { await fetchAPI('/api/logout', { method: 'POST' }); window.location.href = '/login.html'; });
+        
+        document.getElementById('restart-button').addEventListener('click', async () => {
+            if (!confirm("🔄 봇 프로세스를 재시작하시겠습니까?\n(잠시 연결이 끊어질 수 있습니다)")) return;
+            
+            const btn = document.getElementById('restart-button');
+            btn.disabled = true;
+            btn.classList.add('opacity-50', 'cursor-not-allowed');
+            
+            try {
+                const res = await fetchAPI('/api/restart', { method: 'POST' });
+                if (res && res.success) showMessage("재시작 명령을 전송했습니다. 잠시만 기다려주세요.", "success");
+                else showMessage("명령 전송 실패", "error");
+            } catch (e) {
+                showMessage("통신 오류 발생", "error");
+            }
+            
+            setTimeout(() => {
+                btn.disabled = false;
+                btn.classList.remove('opacity-50', 'cursor-not-allowed');
+            }, 10000);
+        });
+
+        document.getElementById('refresh-trades-btn').addEventListener('click', async () => {
+            const btn = document.getElementById('refresh-trades-btn'); const icon = document.getElementById('refresh-icon');
+            btn.disabled = true; icon.classList.add('animate-spin', 'text-blue-600', 'dark:text-blue-400');
+            
+            if (currentTab === 'trades') {
+                try { await Promise.all([ loadTradesLog(true), new Promise(resolve => setTimeout(resolve, 600)) ]); showMessage('매매 기록 갱신 완료', 'success'); } 
+                catch (error) { showMessage('갱신 실패', 'error'); } finally { icon.classList.remove('animate-spin', 'text-blue-600', 'dark:text-blue-400'); btn.disabled = false; }
+            } else {
+                try { await Promise.all([ loadSystemLogs(), new Promise(resolve => setTimeout(resolve, 600)) ]); showMessage('시스템 로그 갱신 완료', 'success'); } 
+                catch (error) { showMessage('갱신 실패', 'error'); } finally { icon.classList.remove('animate-spin', 'text-blue-600', 'dark:text-blue-400'); btn.disabled = false; }
+            }
+        });
+
+        function initializeDashboard() {
+            initInputTrackers(); // [추가] 입력 추적기 초기화
+            loadConditions(); loadTradesLog(); updateBotStatus(); updateDetectedStocks();
+            setInterval(() => { 
+                updateBotStatus(); 
+                if (currentTab === 'trades') loadTradesLog();
+                else loadSystemLogs();
+                updateDetectedStocks();
+                loadSettings(false); 
+            }, 3000); 
+        }
+        initializeDashboard();
+    </script>
+</body>
+</html>

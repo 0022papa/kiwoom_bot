@@ -1,0 +1,8 @@
+nodejs/.env
+python/.env
+nodejs/node_modules/
+-r nodejs/node_modules/
+python/__pycache__/
+-r python/__pycache__/
+data/
+-r data/
